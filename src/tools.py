@@ -204,29 +204,64 @@ _CLIPBOARD = [
     },
     {
         "name": "request_access",
-        "description": "Request a session grant for one or more applications "
-        "(Linux stub: auto-grants and returns screenshotFiltering=false; the real "
-        "grant model lands with the service engine).",
+        "description": "Request a session grant to control one or more "
+        "applications; must be called before the other tools. Linux stub: "
+        "auto-grants the requested apps (no compositor dialog) and returns "
+        "screenshotFiltering=false. The clipboardRead/clipboardWrite/"
+        "systemKeyCombos flags are honoured so call shapes match native.",
         "inputSchema": _obj(
             {
-                "applications": {
+                "apps": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Applications to request access to.",
-                }
-            }
+                    "description": "Application display names or bundle "
+                    "identifiers to request access to.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-sentence explanation shown to the user "
+                    "in the native approval dialog (no surface on Linux).",
+                },
+                "clipboardRead": {
+                    "type": "boolean",
+                    "description": "Also request permission to read the clipboard.",
+                },
+                "clipboardWrite": {
+                    "type": "boolean",
+                    "description": "Also request permission to write the clipboard.",
+                },
+                "systemKeyCombos": {
+                    "type": "boolean",
+                    "description": "Also request permission to send system-level "
+                    "key combos (quit/switch app, lock screen).",
+                },
+            },
+            required=["apps", "reason"],
         ),
     },
     {
         "name": "list_granted_applications",
-        "description": "Return the set of applications currently granted desktop "
-        "access (Linux stub: echoes the granted set).",
+        "description": "Return the applications currently in the session "
+        "allowlist plus the active grant flags and coordinate mode (Linux stub: "
+        "echoes the auto-granted set). No side effects.",
         "inputSchema": _obj({}),
     },
     {
         "name": "open_application",
-        "description": "Launch or focus a desktop application by name.",
-        "inputSchema": _obj({"name": {"type": "string"}}, required=["name"]),
+        "description": "Bring an application to the front, launching it if "
+        "necessary. Linux: best-effort window focus via wmctrl -a / xdotool "
+        "windowactivate (primary target is the single RDP window); degrades to a "
+        "no-op when neither binary is present.",
+        "inputSchema": _obj(
+            {
+                "app": {
+                    "type": "string",
+                    "description": "Display name or bundle identifier of the "
+                    "application to focus.",
+                }
+            },
+            required=["app"],
+        ),
     },
     {
         "name": "switch_display",
@@ -291,10 +326,26 @@ TOOL_NAMES = [t["name"] for t in TOOLS]
 
 # Tools with a live body wired in server.py. Everything else is declared-only
 # and returns a pending-owner error until its sibling ticket lands.
-#   screenshot            — SCRUM-1397 (scaffold proof action)
-#   screenshot / zoom     — SCRUM-1400 (capture group: save_to_disk + zoom)
-#   type / key / hold_key — SCRUM-1403 (keyboard group)
-IMPLEMENTED = {"screenshot", "zoom", "type", "key", "hold_key"}
+#   screenshot / zoom                                           — SCRUM-1397 / 1400 (capture group)
+#   type / key / hold_key                                       — SCRUM-1403 (keyboard group)
+#   read/write_clipboard / request_access /                     — SCRUM-1404 (clipboard + session group)
+#   list_granted_applications / open_application / switch_display
+IMPLEMENTED = {
+    # capture (SCRUM-1397 / 1400)
+    "screenshot",
+    "zoom",
+    # keyboard (SCRUM-1403)
+    "type",
+    "key",
+    "hold_key",
+    # clipboard + session (SCRUM-1404)
+    "read_clipboard",
+    "write_clipboard",
+    "request_access",
+    "list_granted_applications",
+    "open_application",
+    "switch_display",
+}
 
 
 def owner_ticket(name: str) -> str:

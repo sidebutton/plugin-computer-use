@@ -180,6 +180,96 @@ class StdioRoundTripTest(unittest.TestCase):
         self.assertGreater(width, 0)
         self.assertGreater(height, 0)
 
+    def test_request_access_then_list_granted_reflects_it(self):
+        resp = self.server.request(
+            "tools/call",
+            {
+                "name": "request_access",
+                "arguments": {
+                    "apps": ["Firefox"],
+                    "reason": "drive the browser",
+                    "clipboardRead": True,
+                },
+            },
+            mid=10,
+        )
+        granted = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(resp["result"]["isError"])
+        self.assertEqual(granted["grantedApplications"], ["Firefox"])
+        self.assertIs(granted["screenshotFiltering"], False)
+        self.assertTrue(granted["clipboardRead"])
+        # The grant persists in the long-lived session.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "list_granted_applications", "arguments": {}},
+            mid=11,
+        )
+        listed = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(listed["applications"], ["Firefox"])
+        self.assertTrue(listed["clipboardRead"])
+
+    def test_read_clipboard_without_grant_is_error(self):
+        resp = self.server.request(
+            "tools/call", {"name": "read_clipboard", "arguments": {}}, mid=12
+        )
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("clipboardRead", resp["result"]["content"][0]["text"])
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY") and shutil.which("xclip"),
+        "needs xclip + a DISPLAY for the X clipboard round-trip",
+    )
+    def test_clipboard_write_then_read_round_trips(self):
+        payload = "sidebutton clipboard round-trip 1404"
+        # Grant read+write, then write -> read back.
+        self.server.request(
+            "tools/call",
+            {
+                "name": "request_access",
+                "arguments": {
+                    "apps": ["xterm"],
+                    "reason": "clipboard test",
+                    "clipboardRead": True,
+                    "clipboardWrite": True,
+                },
+            },
+            mid=13,
+        )
+        wresp = self.server.request(
+            "tools/call",
+            {"name": "write_clipboard", "arguments": {"text": payload}},
+            mid=14,
+        )
+        self.assertFalse(wresp["result"]["isError"], msg=str(wresp))
+        rresp = self.server.request(
+            "tools/call", {"name": "read_clipboard", "arguments": {}}, mid=15
+        )
+        self.assertFalse(rresp["result"]["isError"], msg=str(rresp))
+        self.assertEqual(rresp["result"]["content"][0]["text"], payload)
+
+    def test_switch_display_is_a_noop(self):
+        resp = self.server.request(
+            "tools/call",
+            {"name": "switch_display", "arguments": {"display": "auto"}},
+            mid=16,
+        )
+        out = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(resp["result"]["isError"])
+        self.assertFalse(out["switched"])
+        self.assertTrue(out["display"])  # reports the current display
+
+    def test_open_application_degrades_gracefully(self):
+        # wmctrl/xdotool absent on this image -> a non-error best-effort result.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "open_application", "arguments": {"app": "Firefox"}},
+            mid=17,
+        )
+        out = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(resp["result"]["isError"])
+        self.assertEqual(out["app"], "Firefox")
+        self.assertIn("focused", out)
+
     def _assert_keyboard_dispatched(self, resp):
         """The call reached the keyboard handler, not the pending-owner stub.
 

@@ -35,16 +35,26 @@ class Server:
 
     def __init__(self, computer: Computer):
         self.computer = computer
-        # name -> handler(arguments) -> MCP result. Only tools also listed in
-        # tools.IMPLEMENTED are dispatched; every other declared tool returns a
-        # pending-owner error. Sibling tickets (SCRUM-1400..1405) register their
-        # handlers here as they land.
+        # name -> handler(arguments) -> MCP result dict. A table (vs. an elif
+        # chain) keeps the merge-conflict surface small for the sibling tickets
+        # (SCRUM-1400..1405) that each wire their own group into this method.
+        # Only tools also listed in tools.IMPLEMENTED are dispatched; every other
+        # declared tool returns a pending-owner error.
         self._handlers = {
-            "screenshot": self._screenshot,   # SCRUM-1397 / 1400
-            "zoom": self._zoom,               # SCRUM-1400
-            "type": self._type,               # SCRUM-1403
-            "key": self._key,                 # SCRUM-1403
-            "hold_key": self._hold_key,       # SCRUM-1403
+            # capture (SCRUM-1397 / 1400)
+            "screenshot": self._screenshot,
+            "zoom": self._zoom,
+            # keyboard (SCRUM-1403)
+            "type": self._type,
+            "key": self._key,
+            "hold_key": self._hold_key,
+            # clipboard + session (SCRUM-1404)
+            "read_clipboard": self._read_clipboard,
+            "write_clipboard": self._write_clipboard,
+            "request_access": self._request_access,
+            "list_granted_applications": self._list_granted_applications,
+            "open_application": self._open_application,
+            "switch_display": self._switch_display,
         }
 
     def handle(self, msg) -> dict | None:
@@ -86,22 +96,23 @@ class Server:
         if name not in TOOL_NAMES:
             return _tool_error(f"unknown tool: {name!r}")
 
-        handler = self._handlers.get(name) if name in IMPLEMENTED else None
-        if handler is None:
+        handler = self._handlers.get(name)
+        if handler is None or name not in IMPLEMENTED:
             # Declared in the surface but its body is owned by a sibling ticket.
             return _tool_error(
-                f"tool {name!r} is declared but not implemented yet; its body is "
+                f"tool {name!r} is declared but not yet implemented; its body is "
                 f"owned by {owner_ticket(name)}. The dispatch base (computer.py: "
                 f"run_xdotool / scale_coordinates / screenshot / to_device) is "
                 f"ready for that work."
             )
 
+        args = params.get("arguments") or {}
         try:
-            return handler(params.get("arguments") or {})
+            return handler(args)
         except ComputerError as exc:
             return _tool_error(str(exc))
 
-    # --- tool handlers ---------------------------------------------------
+    # --- tool handlers ----------------------------------------------------
     # Capture group (SCRUM-1400): screenshot/zoom return MCP image content
     # blocks (plus a saved-path text block when save_to_disk is honoured).
     def _screenshot(self, args: dict) -> dict:
@@ -119,13 +130,41 @@ class Server:
 
     # Keyboard group (SCRUM-1403): plain text acknowledgements.
     def _type(self, args: dict) -> dict:
-        return _tool_ok(self.computer.type_text(args["text"]))
+        return _tool_text(self.computer.type_text(args["text"]))
 
     def _key(self, args: dict) -> dict:
-        return _tool_ok(self.computer.press_key(args["text"], args.get("repeat", 1)))
+        return _tool_text(self.computer.press_key(args["text"], args.get("repeat", 1)))
 
     def _hold_key(self, args: dict) -> dict:
-        return _tool_ok(self.computer.hold_key(args["text"], args["duration"]))
+        return _tool_text(self.computer.hold_key(args["text"], args["duration"]))
+
+    def _read_clipboard(self, args: dict) -> dict:
+        return _tool_text(self.computer.read_clipboard())
+
+    def _write_clipboard(self, args: dict) -> dict:
+        text = args.get("text") or ""
+        self.computer.write_clipboard(text)
+        return _tool_text(f"wrote {len(text)} characters to the clipboard")
+
+    def _request_access(self, args: dict) -> dict:
+        return _tool_json(
+            self.computer.request_access(
+                apps=args.get("apps"),
+                reason=args.get("reason"),
+                clipboardRead=bool(args.get("clipboardRead", False)),
+                clipboardWrite=bool(args.get("clipboardWrite", False)),
+                systemKeyCombos=bool(args.get("systemKeyCombos", False)),
+            )
+        )
+
+    def _list_granted_applications(self, args: dict) -> dict:
+        return _tool_json(self.computer.list_granted_applications())
+
+    def _open_application(self, args: dict) -> dict:
+        return _tool_json(self.computer.open_application(args.get("app") or ""))
+
+    def _switch_display(self, args: dict) -> dict:
+        return _tool_json(self.computer.switch_display(args.get("display")))
 
 
 def _error(mid, code: int, message: str) -> dict:
@@ -145,8 +184,16 @@ def _capture_result(cap) -> dict:
     return {"content": content, "isError": False}
 
 
-def _tool_ok(text: str) -> dict:
+def _tool_text(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+def _tool_json(obj) -> dict:
+    """A successful result whose payload is structured (grants, focus, display)."""
+    return {
+        "content": [{"type": "text", "text": json.dumps(obj)}],
+        "isError": False,
+    }
 
 
 def main() -> int:
