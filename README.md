@@ -31,9 +31,10 @@ a **single, long-lived child process** that speaks MCP over stdio.
 ## Tool surface
 
 24 tools, grouped by the sibling ticket that owns each body. `screenshot`
-(SCRUM-1397) and the keyboard group `type` / `key` / `hold_key` (SCRUM-1403) are
-implemented; the rest are declared and return a clear pending-owner error until
-their ticket lands. Full input schemas:
+(SCRUM-1397), the keyboard group `type` / `key` / `hold_key` (SCRUM-1403), and
+the **clipboard + session group (SCRUM-1404)** are implemented; the rest are
+declared and return a clear pending-owner error until their ticket lands. Full
+input schemas:
 [`docs/computer-use-mcp-tools-schema.md`](docs/computer-use-mcp-tools-schema.md).
 
 | Group | Ticket | Tools |
@@ -42,8 +43,27 @@ their ticket lands. Full input schemas:
 | click | SCRUM-1401 | `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click` |
 | move / drag / scroll | SCRUM-1402 | `mouse_move`, `left_click_drag`, `scroll`, `left_mouse_down`, `left_mouse_up` |
 | keyboard | SCRUM-1403 | `type` ✅, `key` ✅, `hold_key` ✅ |
-| clipboard + session | SCRUM-1404 | `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display` |
+| clipboard + session | SCRUM-1404 | `read_clipboard` ✅, `write_clipboard` ✅, `request_access` ✅, `list_granted_applications` ✅, `open_application` ✅, `switch_display` ✅ |
 | utility / batch | SCRUM-1405 | `computer_batch`, `wait`, `cursor_position` |
+
+### Clipboard + session behaviour (SCRUM-1404)
+
+The macOS session/permission model has no XFCE/Xvfb equivalent, so these
+**degrade gracefully instead of erroring** — keeping cross-runner (macOS-authored)
+skills working — while honouring the native grant flags so call shapes match:
+
+- `request_access` **auto-grants** the requested `apps` (no compositor dialog),
+  records the `clipboardRead` / `clipboardWrite` / `systemKeyCombos` flags
+  (additive across calls), and returns `screenshotFiltering: false`.
+- `list_granted_applications` echoes the allowlist + active grant flags.
+- `read_clipboard` / `write_clipboard` shell out to
+  `xclip -selection clipboard`, **gated** on the `clipboardRead` / `clipboardWrite`
+  grants (a call without the grant returns an `isError` result, matching native).
+- `open_application` is **best-effort** window focus (`wmctrl -a`, then
+  `xdotool search --name … windowactivate`); the primary target is the single
+  RDP window. With neither binary installed it returns a non-error no-op note.
+- `switch_display` is a **no-op** on the single Xvfb `:10` and reports the
+  current display (accepts `"auto"`).
 
 > **Surface count.** This is the **24-tool** surface the epic
 > ([SCRUM-1399](https://aictpo.atlassian.net/browse/SCRUM-1399)) specifies. The
@@ -132,9 +152,9 @@ and runs no build step, so the server is **stdlib-only** and shells out to:
 | Tool | Used for | Notes |
 | --- | --- | --- |
 | a screenshot backend | `screenshot` | `gnome-screenshot` **or** `scrot` **or** ImageMagick (`import`/`convert`). The runner ships ImageMagick. |
-| `xdotool` | pointer/keyboard actions | required by the click/move/keyboard groups (siblings). |
-| `xclip` | `clipboard` | already on the runner. |
-| `wmctrl` | window ops | optional. |
+| `xdotool` | pointer/keyboard actions; `open_application` fallback | required by the click/move/keyboard groups (siblings); absent on the runner image. |
+| `xclip` | `read_clipboard` / `write_clipboard` | already on the runner; grant-gated. |
+| `wmctrl` | `open_application` window focus | best-effort; `open_application` degrades to a no-op when absent. |
 
 `scrot` and `gnome-screenshot` are **absent** on the runner image, so the
 screenshot backend falls through to ImageMagick `import -window root` (verified

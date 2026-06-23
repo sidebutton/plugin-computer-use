@@ -19,7 +19,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from tools import IMPLEMENTED, OWNER, TOOLS  # noqa: E402
+from tools import IMPLEMENTED, OWNER, TOOL_NAMES, TOOLS  # noqa: E402
 
 NAME = "computer-use"
 VERSION = "0.1.0"

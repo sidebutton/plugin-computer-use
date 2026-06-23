@@ -191,12 +191,27 @@ class ToolSurfaceTest(unittest.TestCase):
         for name in TOOL_NAMES:
             self.assertIn(name, OWNER)
 
-    def test_implemented_is_screenshot_plus_keyboard_group(self):
-        # SCRUM-1397 wired screenshot; SCRUM-1403 adds the keyboard group.
-        self.assertEqual(IMPLEMENTED, {"screenshot", "type", "key", "hold_key"})
+    def test_implemented_is_screenshot_keyboard_and_clipboard_session(self):
+        # screenshot (SCRUM-1397) + keyboard group (SCRUM-1403) + the
+        # clipboard/session group (SCRUM-1404).
+        self.assertEqual(
+            IMPLEMENTED,
+            {
+                "screenshot",
+                "type",
+                "key",
+                "hold_key",
+                "read_clipboard",
+                "write_clipboard",
+                "request_access",
+                "list_granted_applications",
+                "open_application",
+                "switch_display",
+            },
+        )
 
     def test_key_has_optional_repeat(self):
-        # AC4: key gains an additive `repeat` input; the surface stays 24 tools.
+        # SCRUM-1403: key gains an additive `repeat` input; surface stays 24.
         key = next(t for t in TOOLS if t["name"] == "key")
         schema = key["inputSchema"]
         repeat = schema["properties"].get("repeat")
@@ -205,6 +220,100 @@ class ToolSurfaceTest(unittest.TestCase):
         self.assertEqual(repeat["minimum"], 1)
         self.assertNotIn("repeat", schema.get("required", []))  # stays optional
         self.assertEqual(len(TOOL_NAMES), 24)
+
+    def test_request_access_schema_matches_native(self):
+        # AC6: reconciled to the-assistant/docs/computer-use-mcp-tools-schema.md.
+        ra = next(t for t in TOOLS if t["name"] == "request_access")
+        props = ra["inputSchema"]["properties"]
+        self.assertEqual(ra["inputSchema"]["required"], ["apps", "reason"])
+        self.assertEqual(props["apps"]["type"], "array")
+        for flag in ("clipboardRead", "clipboardWrite", "systemKeyCombos"):
+            self.assertEqual(props[flag]["type"], "boolean")
+        self.assertNotIn("applications", props)  # the old, non-native key is gone
+
+    def test_open_application_schema_uses_app(self):
+        oa = next(t for t in TOOLS if t["name"] == "open_application")
+        self.assertEqual(oa["inputSchema"]["required"], ["app"])
+        self.assertIn("app", oa["inputSchema"]["properties"])
+        self.assertNotIn("name", oa["inputSchema"]["properties"])
+
+
+class GrantStateTest(unittest.TestCase):
+    """request_access / list_granted_applications, no desktop required."""
+
+    def setUp(self):
+        self.c = Computer(display=":10")
+
+    def test_request_access_auto_grants_and_flips_flags(self):
+        out = self.c.request_access(
+            apps=["Slack", "Calendar"], reason="demo", clipboardRead=True
+        )
+        self.assertEqual(out["grantedApplications"], ["Calendar", "Slack"])
+        self.assertEqual(out["deniedApplications"], [])
+        self.assertIs(out["screenshotFiltering"], False)
+        self.assertTrue(out["clipboardRead"])
+        self.assertFalse(out["clipboardWrite"])
+
+    def test_grants_are_additive_across_calls(self):
+        self.c.request_access(apps=["Slack"], reason="a", clipboardWrite=True)
+        out = self.c.request_access(apps=["Finder"], reason="b")
+        self.assertEqual(out["grantedApplications"], ["Finder", "Slack"])
+        self.assertTrue(out["clipboardWrite"])  # earlier grant persists
+
+    def test_list_granted_applications_echoes_state(self):
+        self.c.request_access(apps=["Slack"], reason="x", systemKeyCombos=True)
+        out = self.c.list_granted_applications()
+        self.assertEqual(out["applications"], ["Slack"])
+        self.assertTrue(out["systemKeyCombos"])
+        self.assertEqual(out["coordinateMode"], "screenshot")
+
+    def test_request_access_tolerates_missing_apps(self):
+        # Degrade gracefully rather than crash on a thin call.
+        out = self.c.request_access()
+        self.assertEqual(out["grantedApplications"], [])
+
+
+class ClipboardGateTest(unittest.TestCase):
+    def setUp(self):
+        self.c = Computer(display=":10")
+
+    def test_read_without_grant_raises(self):
+        with self.assertRaises(ComputerError):
+            self.c.read_clipboard()
+
+    def test_write_without_grant_raises(self):
+        with self.assertRaises(ComputerError):
+            self.c.write_clipboard("hi")
+
+    def test_xclip_argv_is_built_correctly(self):
+        rargv, renv = self.c.build_xclip(["-selection", "clipboard", "-o"])
+        self.assertEqual(rargv, ["xclip", "-selection", "clipboard", "-o"])
+        self.assertEqual(renv["DISPLAY"], ":10")
+        wargv, _ = self.c.build_xclip(["-selection", "clipboard", "-i"])
+        self.assertEqual(wargv, ["xclip", "-selection", "clipboard", "-i"])
+
+
+class OpenApplicationAndDisplayTest(unittest.TestCase):
+    def setUp(self):
+        self.c = Computer(display=":10")
+
+    def test_wmctrl_argv_is_built_correctly(self):
+        argv, env = self.c.build_wmctrl(["-a", "Firefox"])
+        self.assertEqual(argv, ["wmctrl", "-a", "Firefox"])
+        self.assertEqual(env["DISPLAY"], ":10")
+
+    def test_open_application_degrades_without_binaries(self):
+        # wmctrl/xdotool are absent on the runner image -> graceful no-op, never
+        # a crash. (When a binary is present this returns focused True/False.)
+        out = self.c.open_application("Firefox")
+        self.assertEqual(out["app"], "Firefox")
+        self.assertIn("focused", out)
+        self.assertIsInstance(out["focused"], bool)
+
+    def test_switch_display_is_a_noop_returning_current(self):
+        out = self.c.switch_display("auto")
+        self.assertEqual(out["display"], ":10")
+        self.assertFalse(out["switched"])
 
 
 if __name__ == "__main__":
