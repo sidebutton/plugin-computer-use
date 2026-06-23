@@ -150,32 +150,35 @@ declare `xdotool`, a screenshot backend, and `xclip` in its `system_deps`.
   `/tmp/sidebutton-computer-use.lock`, override with `CU_LOCK_PATH`) so only one
   session drives the shared pointer/keyboard; a second instance exits non-zero.
 
-## Service-manifest contract (input to SCRUM-1406)
+## Service-manifest contract (SCRUM-1406)
 
-`plugin.json` proposes the service shape the engine ticket implements against:
+`plugin.json` targets the merged `runtime: "service"` tier: the SideButton server
+keeps the child alive, discovers its tools via `tools/list`, and forwards
+`tools/call` to it.
 
 ```jsonc
 {
   "name": "computer-use",
-  "runtime": "service",            // new: not understood by today's loader
+  "runtime": "service",
   "service": {
-    "protocol": "mcp-stdio",
-    "command": ["python3", "src/server.py"],
-    "toolDiscovery": "tools/list", // host discovers the surface at runtime
-    "singleOwner": true,
-    "display": ":10"
+    "command": "python3 src/server.py",  // non-empty string; the engine splits on
+                                          // whitespace and spawns with cwd=plugin dir
+    "toolNamespace": "computer_use",      // tools surface as computer_use_<tool>
+    "tools": {                            // per-tool timeout overrides (ms)
+      "hold_key": { "timeoutMs": 120000 },
+      "wait":     { "timeoutMs": 120000 }
+    }
   },
-  "tools": [ /* full surface, mirrored from tools.py */ ]
+  "tools": []                             // service plugins declare no static tools
 }
 ```
 
-> **Intentionally not loadable today.** The current `readPluginManifest`/`loader.ts`
-> require a per-tool `handler` and know no `runtime` field, so `sidebutton plugin
-> install` will reject this manifest **by design** — that is the exact gap
-> SCRUM-1406 closes (teach the loader `runtime: "service"`: launch the `command`,
-> discover tools via `tools/list`, route `tools/call` to the child, namespace on
-> aggregation). This ticket does **not** modify the loader or the agent-runners
-> catalog.
+> The loader (`the-assistant` `packages/server/src/plugins/loader.ts`) recognizes
+> only `command` / `timeoutMs` / `toolNamespace` / `tools` under `service`, and
+> **hard-rejects** the manifest unless `command` is a non-empty **string** — an
+> array fails validation and the plugin never loads. Tools are discovered live,
+> so the top-level `tools` array is normalized to `[]`. This repo owns only
+> `plugin.json`; the agent-runners catalog entry + `system_deps` are SCRUM-1407.
 
 ## Configuration (env)
 
