@@ -19,7 +19,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from tools import IMPLEMENTED, OWNER, TOOLS  # noqa: E402
+from tools import IMPLEMENTED, OWNER, TOOL_NAMES, TOOLS  # noqa: E402
 
 NAME = "computer-use"
 VERSION = "0.1.0"
@@ -98,9 +98,10 @@ def build_schema_doc() -> str:
         "`type`, `scroll`, `wait`, `click`); namespacing on aggregation is "
         "deferred to the service engine (SCRUM-1406).",
         "",
-        f"**{len(TOOLS)} tools.** Only `screenshot` is implemented in SCRUM-1397 "
-        "(the proof action); the rest are declared and return a pending-owner "
-        "error until their sibling ticket lands.",
+        f"**{len(TOOLS)} tools, {len(IMPLEMENTED)} implemented** "
+        f"({', '.join('`' + n + '`' for n in TOOL_NAMES if n in IMPLEMENTED)}). "
+        "The rest are declared and return a pending-owner error until their "
+        "sibling ticket lands.",
         "",
         "| Tool | Owner | Input | Status |",
         "| --- | --- | --- | --- |",

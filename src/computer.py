@@ -143,6 +143,18 @@ class Computer:
         )
         self.scaling_enabled = scaling_enabled
 
+        # --- session grant state (request_access / clipboard / open_application)
+        # Lives in memory because the service engine keeps ONE long-lived child
+        # and serializes calls (the-assistant packages/server service-manager),
+        # so cross-call state is safe. XFCE/Xvfb has no compositor approval
+        # dialog, so request_access auto-grants; these flags exist so the call
+        # shapes match the native macOS contract (clipboard/systemKeyCombos
+        # grants), and clipboard reads/writes are gated on them.
+        self._allowlist: set[str] = set()
+        self._clipboard_read = False
+        self._clipboard_write = False
+        self._system_key_combos = False
+
     def _env(self) -> dict:
         """A subprocess env that forces our target DISPLAY."""
         env = dict(os.environ)
@@ -245,3 +257,153 @@ class Computer:
                 tmp.unlink()
             except OSError:
                 pass
+
+    # --- clipboard + session (SCRUM-1404) --------------------------------
+    # The macOS session/permission model has no XFCE/Xvfb equivalent, so these
+    # degrade gracefully (never crash) instead of erroring — keeping cross-runner
+    # (macOS-authored) skills working. Behaviour follows the design of record
+    # (the-assistant docs/plugins/computer-use.md "Divergences"): request_access
+    # auto-grants and reports screenshotFiltering=false, switch_display is a
+    # single-display no-op, open_application is best-effort window focus, and the
+    # clipboard tools shell out to xclip gated on the clipboardRead/Write grants.
+
+    def build_xclip(self, args) -> tuple[list[str], dict]:
+        """Return ``(argv, env)`` for an xclip invocation WITHOUT running it
+        (exposed so unit tests can assert command construction with no desktop)."""
+        return (["xclip", *[str(a) for a in args]], self._env())
+
+    def build_wmctrl(self, args) -> tuple[list[str], dict]:
+        """Return ``(argv, env)`` for a wmctrl invocation WITHOUT running it."""
+        return (["wmctrl", *[str(a) for a in args]], self._env())
+
+    def request_access(
+        self,
+        apps=None,
+        reason=None,
+        clipboardRead: bool = False,
+        clipboardWrite: bool = False,
+        systemKeyCombos: bool = False,
+    ) -> dict:
+        """Auto-grant the requested apps + flags (Linux has no compositor dialog).
+
+        Grants are additive across calls, mirroring native ("previously granted
+        apps remain granted"). ``reason`` is accepted for call-shape parity but
+        has no Linux surface (no approval dialog). Returns the cumulative grant.
+        """
+        self._allowlist.update(str(a) for a in (apps or []))
+        self._clipboard_read = self._clipboard_read or bool(clipboardRead)
+        self._clipboard_write = self._clipboard_write or bool(clipboardWrite)
+        self._system_key_combos = self._system_key_combos or bool(systemKeyCombos)
+        return {
+            "grantedApplications": sorted(self._allowlist),
+            "deniedApplications": [],
+            "screenshotFiltering": False,
+            "clipboardRead": self._clipboard_read,
+            "clipboardWrite": self._clipboard_write,
+            "systemKeyCombos": self._system_key_combos,
+        }
+
+    def list_granted_applications(self) -> dict:
+        """Echo the current allowlist + active grant flags (no side effects)."""
+        return {
+            "applications": sorted(self._allowlist),
+            "clipboardRead": self._clipboard_read,
+            "clipboardWrite": self._clipboard_write,
+            "systemKeyCombos": self._system_key_combos,
+            "coordinateMode": "screenshot",
+        }
+
+    def read_clipboard(self) -> str:
+        """Return the X clipboard contents. Gated on the ``clipboardRead`` grant."""
+        if not self._clipboard_read:
+            raise ComputerError(
+                "read_clipboard requires the clipboardRead grant; call "
+                "request_access with clipboardRead=true first"
+            )
+        if shutil.which("xclip") is None:
+            raise ComputerError(
+                "xclip is not installed on this host (required for clipboard "
+                "access; declare it in the plugin system_deps)"
+            )
+        argv, env = self.build_xclip(["-selection", "clipboard", "-o"])
+        proc = subprocess.run(argv, env=env, capture_output=True, timeout=15)
+        if proc.returncode != 0:
+            # An empty/unowned clipboard reports "target STRING not available" —
+            # treat that as empty rather than a hard failure.
+            stderr = proc.stderr.decode(errors="replace").strip()
+            if "target" in stderr.lower() or not stderr:
+                return ""
+            raise ComputerError(f"xclip read failed: {stderr}")
+        return proc.stdout.decode(errors="replace")
+
+    def write_clipboard(self, text: str) -> None:
+        """Write ``text`` to the X clipboard. Gated on the ``clipboardWrite`` grant."""
+        if not self._clipboard_write:
+            raise ComputerError(
+                "write_clipboard requires the clipboardWrite grant; call "
+                "request_access with clipboardWrite=true first"
+            )
+        if shutil.which("xclip") is None:
+            raise ComputerError(
+                "xclip is not installed on this host (required for clipboard "
+                "access; declare it in the plugin system_deps)"
+            )
+        argv, env = self.build_xclip(["-selection", "clipboard", "-i"])
+        # xclip -i forks a child to own the selection; if we capture stdout/stderr
+        # the inherited pipe keeps run() blocked until the selection is replaced.
+        # Send them to /dev/null so run() returns once the parent has forked.
+        proc = subprocess.run(
+            argv,
+            input=text.encode(),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            raise ComputerError(f"xclip write failed (exit {proc.returncode})")
+
+    def open_application(self, app: str) -> dict:
+        """Best-effort focus of ``app``'s window (wmctrl -a, then xdotool).
+
+        The primary target is the single RDP window, which is already present.
+        Degrades to a no-op (never crashes) when neither binary is installed.
+        """
+        tried: list[str] = []
+        if shutil.which("wmctrl"):
+            argv, env = self.build_wmctrl(["-a", app])
+            proc = subprocess.run(argv, env=env, capture_output=True, timeout=15)
+            if proc.returncode == 0:
+                return {"app": app, "focused": True, "via": "wmctrl"}
+            tried.append("wmctrl")
+        if shutil.which("xdotool"):
+            argv, env = self.build_xdotool(
+                ["search", "--name", app, "windowactivate"]
+            )
+            proc = subprocess.run(argv, env=env, capture_output=True, timeout=15)
+            if proc.returncode == 0:
+                return {"app": app, "focused": True, "via": "xdotool"}
+            tried.append("xdotool")
+        if not tried:
+            note = (
+                "neither wmctrl nor xdotool is installed; window focus is a "
+                "best-effort no-op on this host"
+            )
+        else:
+            note = f"no window matching {app!r} found via {', '.join(tried)}"
+        return {"app": app, "focused": False, "note": note}
+
+    def switch_display(self, display=None) -> dict:
+        """No-op on the single Xvfb display; report the current display.
+
+        Accepts ``"auto"`` (native's reset-to-automatic) as the same no-op.
+        """
+        return {
+            "display": self.display,
+            "switched": False,
+            "requested": display,
+            "note": (
+                f"single display {self.display}; switch_display is a no-op on "
+                "Linux/Xvfb"
+            ),
+        }

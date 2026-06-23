@@ -35,6 +35,19 @@ class Server:
 
     def __init__(self, computer: Computer):
         self.computer = computer
+        # name -> handler(arguments) -> MCP result dict. A table (vs. an elif
+        # chain) keeps the merge-conflict surface small for the sibling tickets
+        # (SCRUM-1400..1405) that each wire their own group into this method.
+        self._handlers = {
+            "screenshot": self._screenshot,
+            # clipboard + session (SCRUM-1404)
+            "read_clipboard": self._read_clipboard,
+            "write_clipboard": self._write_clipboard,
+            "request_access": self._request_access,
+            "list_granted_applications": self._list_granted_applications,
+            "open_application": self._open_application,
+            "switch_display": self._switch_display,
+        }
 
     def handle(self, msg) -> dict | None:
         """Return a JSON-RPC response dict, or ``None`` for a notification."""
@@ -75,25 +88,57 @@ class Server:
         if name not in TOOL_NAMES:
             return _tool_error(f"unknown tool: {name!r}")
 
-        if name == "screenshot" and name in IMPLEMENTED:
-            try:
-                b64 = self.computer.screenshot()
-            except ComputerError as exc:
-                return _tool_error(str(exc))
-            return {
-                "content": [
-                    {"type": "image", "data": b64, "mimeType": "image/png"}
-                ],
-                "isError": False,
-            }
+        handler = self._handlers.get(name)
+        if handler is None or name not in IMPLEMENTED:
+            # Declared in the surface but its body is owned by a sibling ticket.
+            return _tool_error(
+                f"tool {name!r} is declared but not yet implemented; its body is "
+                f"owned by {owner_ticket(name)}. The dispatch base (computer.py: "
+                f"run_xdotool / scale_coordinates / screenshot) is ready for that "
+                f"work."
+            )
 
-        # Declared in the surface but not yet implemented in SCRUM-1397.
-        return _tool_error(
-            f"tool {name!r} is declared but not implemented in SCRUM-1397; its "
-            f"body is owned by {owner_ticket(name)}. The dispatch base "
-            f"(computer.py: run_xdotool / scale_coordinates / screenshot) is "
-            f"ready for that work."
+        args = params.get("arguments") or {}
+        try:
+            return handler(args)
+        except ComputerError as exc:
+            return _tool_error(str(exc))
+
+    # --- tool handlers ----------------------------------------------------
+    def _screenshot(self, args: dict) -> dict:
+        b64 = self.computer.screenshot()
+        return {
+            "content": [{"type": "image", "data": b64, "mimeType": "image/png"}],
+            "isError": False,
+        }
+
+    def _read_clipboard(self, args: dict) -> dict:
+        return _tool_text(self.computer.read_clipboard())
+
+    def _write_clipboard(self, args: dict) -> dict:
+        text = args.get("text") or ""
+        self.computer.write_clipboard(text)
+        return _tool_text(f"wrote {len(text)} characters to the clipboard")
+
+    def _request_access(self, args: dict) -> dict:
+        return _tool_json(
+            self.computer.request_access(
+                apps=args.get("apps"),
+                reason=args.get("reason"),
+                clipboardRead=bool(args.get("clipboardRead", False)),
+                clipboardWrite=bool(args.get("clipboardWrite", False)),
+                systemKeyCombos=bool(args.get("systemKeyCombos", False)),
+            )
         )
+
+    def _list_granted_applications(self, args: dict) -> dict:
+        return _tool_json(self.computer.list_granted_applications())
+
+    def _open_application(self, args: dict) -> dict:
+        return _tool_json(self.computer.open_application(args.get("app") or ""))
+
+    def _switch_display(self, args: dict) -> dict:
+        return _tool_json(self.computer.switch_display(args.get("display")))
 
 
 def _error(mid, code: int, message: str) -> dict:
@@ -102,6 +147,18 @@ def _error(mid, code: int, message: str) -> dict:
 
 def _tool_error(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
+def _tool_text(text: str) -> dict:
+    return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+def _tool_json(obj) -> dict:
+    """A successful result whose payload is structured (grants, focus, display)."""
+    return {
+        "content": [{"type": "text", "text": json.dumps(obj)}],
+        "isError": False,
+    }
 
 
 def main() -> int:
