@@ -23,6 +23,14 @@ _COORDINATE = {
     "description": "[x, y] in the model coordinate space (scaled to the screen).",
 }
 
+# Shared with screenshot + zoom (the canonical contract puts it on both).
+_SAVE_TO_DISK = {
+    "type": "boolean",
+    "description": "Save the image to disk and return the saved path in the tool "
+    "result, so it can be attached to a message for the user. Only set this when "
+    "you intend to share the image.",
+}
+
 
 def _obj(properties: dict, required=None) -> dict:
     schema = {"type": "object", "properties": properties}
@@ -37,13 +45,17 @@ _CAPTURE = [
     {
         "name": "screenshot",
         "description": "Capture the active display (DISPLAY=:10) and return a "
-        "base64-encoded PNG. Implemented in SCRUM-1397 as the proof action.",
-        "inputSchema": _obj({}),
+        "base64-encoded PNG image block. The returned image is the coordinate "
+        "space that subsequent click/move calls refer to. Set save_to_disk to "
+        "also write the PNG and return its path.",
+        "inputSchema": _obj({"save_to_disk": _SAVE_TO_DISK}),
     },
     {
         "name": "zoom",
-        "description": "Capture and return a magnified PNG of a sub-region of "
-        "the screen.",
+        "description": "Take a higher-resolution screenshot of a region of the "
+        "last full-screen screenshot — use it to inspect small text, button "
+        "labels, or fine UI detail. Coordinates in later click calls still refer "
+        "to the full-screen screenshot, never the zoomed image. Read-only.",
         "inputSchema": _obj(
             {
                 "region": {
@@ -51,8 +63,11 @@ _CAPTURE = [
                     "items": {"type": "integer"},
                     "minItems": 4,
                     "maxItems": 4,
-                    "description": "[x, y, width, height] region to magnify.",
-                }
+                    "description": "(x0, y0, x1, y1): rectangle to zoom into, in "
+                    "the coordinate space of the most recent full-screen "
+                    "screenshot. x0,y0 = top-left, x1,y1 = bottom-right.",
+                },
+                "save_to_disk": _SAVE_TO_DISK,
             },
             required=["region"],
         ),
@@ -189,29 +204,64 @@ _CLIPBOARD = [
     },
     {
         "name": "request_access",
-        "description": "Request a session grant for one or more applications "
-        "(Linux stub: auto-grants and returns screenshotFiltering=false; the real "
-        "grant model lands with the service engine).",
+        "description": "Request a session grant to control one or more "
+        "applications; must be called before the other tools. Linux stub: "
+        "auto-grants the requested apps (no compositor dialog) and returns "
+        "screenshotFiltering=false. The clipboardRead/clipboardWrite/"
+        "systemKeyCombos flags are honoured so call shapes match native.",
         "inputSchema": _obj(
             {
-                "applications": {
+                "apps": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Applications to request access to.",
-                }
-            }
+                    "description": "Application display names or bundle "
+                    "identifiers to request access to.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-sentence explanation shown to the user "
+                    "in the native approval dialog (no surface on Linux).",
+                },
+                "clipboardRead": {
+                    "type": "boolean",
+                    "description": "Also request permission to read the clipboard.",
+                },
+                "clipboardWrite": {
+                    "type": "boolean",
+                    "description": "Also request permission to write the clipboard.",
+                },
+                "systemKeyCombos": {
+                    "type": "boolean",
+                    "description": "Also request permission to send system-level "
+                    "key combos (quit/switch app, lock screen).",
+                },
+            },
+            required=["apps", "reason"],
         ),
     },
     {
         "name": "list_granted_applications",
-        "description": "Return the set of applications currently granted desktop "
-        "access (Linux stub: echoes the granted set).",
+        "description": "Return the applications currently in the session "
+        "allowlist plus the active grant flags and coordinate mode (Linux stub: "
+        "echoes the auto-granted set). No side effects.",
         "inputSchema": _obj({}),
     },
     {
         "name": "open_application",
-        "description": "Launch or focus a desktop application by name.",
-        "inputSchema": _obj({"name": {"type": "string"}}, required=["name"]),
+        "description": "Bring an application to the front, launching it if "
+        "necessary. Linux: best-effort window focus via wmctrl -a / xdotool "
+        "windowactivate (primary target is the single RDP window); degrades to a "
+        "no-op when neither binary is present.",
+        "inputSchema": _obj(
+            {
+                "app": {
+                    "type": "string",
+                    "description": "Display name or bundle identifier of the "
+                    "application to focus.",
+                }
+            },
+            required=["app"],
+        ),
     },
     {
         "name": "switch_display",
@@ -276,9 +326,26 @@ TOOL_NAMES = [t["name"] for t in TOOLS]
 
 # Tools with a live body wired in server.py. Everything else is declared-only
 # and returns a pending-owner error until its sibling ticket lands.
-#   screenshot           — SCRUM-1397 (scaffold proof action)
-#   type / key / hold_key — SCRUM-1403 (keyboard group)
-IMPLEMENTED = {"screenshot", "type", "key", "hold_key"}
+#   screenshot / zoom                                           — SCRUM-1397 / 1400 (capture group)
+#   type / key / hold_key                                       — SCRUM-1403 (keyboard group)
+#   read/write_clipboard / request_access /                     — SCRUM-1404 (clipboard + session group)
+#   list_granted_applications / open_application / switch_display
+IMPLEMENTED = {
+    # capture (SCRUM-1397 / 1400)
+    "screenshot",
+    "zoom",
+    # keyboard (SCRUM-1403)
+    "type",
+    "key",
+    "hold_key",
+    # clipboard + session (SCRUM-1404)
+    "read_clipboard",
+    "write_clipboard",
+    "request_access",
+    "list_granted_applications",
+    "open_application",
+    "switch_display",
+}
 
 
 def owner_ticket(name: str) -> str:

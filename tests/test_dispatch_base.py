@@ -1,6 +1,8 @@
 """Unit tests for the computer.py dispatch base (no desktop required)."""
 
+import base64
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -10,10 +12,12 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from computer import (  # noqa: E402
+    CaptureSession,
     Computer,
     ComputerError,
     ScalingSource,
     SingleOwnerLock,
+    _png_size,
     detect_screenshot_backend,
 )
 from tools import IMPLEMENTED, OWNER, TOOL_NAMES, TOOLS  # noqa: E402
@@ -191,12 +195,28 @@ class ToolSurfaceTest(unittest.TestCase):
         for name in TOOL_NAMES:
             self.assertIn(name, OWNER)
 
-    def test_implemented_is_screenshot_plus_keyboard_group(self):
-        # SCRUM-1397 wired screenshot; SCRUM-1403 adds the keyboard group.
-        self.assertEqual(IMPLEMENTED, {"screenshot", "type", "key", "hold_key"})
+    def test_implemented_is_capture_keyboard_and_clipboard_session(self):
+        # capture group (SCRUM-1397 screenshot + SCRUM-1400 zoom) + keyboard
+        # group (SCRUM-1403) + clipboard/session group (SCRUM-1404).
+        self.assertEqual(
+            IMPLEMENTED,
+            {
+                "screenshot",
+                "zoom",
+                "type",
+                "key",
+                "hold_key",
+                "read_clipboard",
+                "write_clipboard",
+                "request_access",
+                "list_granted_applications",
+                "open_application",
+                "switch_display",
+            },
+        )
 
     def test_key_has_optional_repeat(self):
-        # AC4: key gains an additive `repeat` input; the surface stays 24 tools.
+        # SCRUM-1403: key gains an additive `repeat` input; surface stays 24.
         key = next(t for t in TOOLS if t["name"] == "key")
         schema = key["inputSchema"]
         repeat = schema["properties"].get("repeat")
@@ -205,6 +225,226 @@ class ToolSurfaceTest(unittest.TestCase):
         self.assertEqual(repeat["minimum"], 1)
         self.assertNotIn("repeat", schema.get("required", []))  # stays optional
         self.assertEqual(len(TOOL_NAMES), 24)
+
+    def test_request_access_schema_matches_native(self):
+        # AC6: reconciled to the-assistant/docs/computer-use-mcp-tools-schema.md.
+        ra = next(t for t in TOOLS if t["name"] == "request_access")
+        props = ra["inputSchema"]["properties"]
+        self.assertEqual(ra["inputSchema"]["required"], ["apps", "reason"])
+        self.assertEqual(props["apps"]["type"], "array")
+        for flag in ("clipboardRead", "clipboardWrite", "systemKeyCombos"):
+            self.assertEqual(props[flag]["type"], "boolean")
+        self.assertNotIn("applications", props)  # the old, non-native key is gone
+
+    def test_open_application_schema_uses_app(self):
+        oa = next(t for t in TOOLS if t["name"] == "open_application")
+        self.assertEqual(oa["inputSchema"]["required"], ["app"])
+        self.assertIn("app", oa["inputSchema"]["properties"])
+        self.assertNotIn("name", oa["inputSchema"]["properties"])
+
+
+class GrantStateTest(unittest.TestCase):
+    """request_access / list_granted_applications, no desktop required."""
+
+    def setUp(self):
+        self.c = Computer(display=":10")
+
+    def test_request_access_auto_grants_and_flips_flags(self):
+        out = self.c.request_access(
+            apps=["Slack", "Calendar"], reason="demo", clipboardRead=True
+        )
+        self.assertEqual(out["grantedApplications"], ["Calendar", "Slack"])
+        self.assertEqual(out["deniedApplications"], [])
+        self.assertIs(out["screenshotFiltering"], False)
+        self.assertTrue(out["clipboardRead"])
+        self.assertFalse(out["clipboardWrite"])
+
+    def test_grants_are_additive_across_calls(self):
+        self.c.request_access(apps=["Slack"], reason="a", clipboardWrite=True)
+        out = self.c.request_access(apps=["Finder"], reason="b")
+        self.assertEqual(out["grantedApplications"], ["Finder", "Slack"])
+        self.assertTrue(out["clipboardWrite"])  # earlier grant persists
+
+    def test_list_granted_applications_echoes_state(self):
+        self.c.request_access(apps=["Slack"], reason="x", systemKeyCombos=True)
+        out = self.c.list_granted_applications()
+        self.assertEqual(out["applications"], ["Slack"])
+        self.assertTrue(out["systemKeyCombos"])
+        self.assertEqual(out["coordinateMode"], "screenshot")
+
+    def test_request_access_tolerates_missing_apps(self):
+        # Degrade gracefully rather than crash on a thin call.
+        out = self.c.request_access()
+        self.assertEqual(out["grantedApplications"], [])
+
+
+class ClipboardGateTest(unittest.TestCase):
+    def setUp(self):
+        self.c = Computer(display=":10")
+
+    def test_read_without_grant_raises(self):
+        with self.assertRaises(ComputerError):
+            self.c.read_clipboard()
+
+    def test_write_without_grant_raises(self):
+        with self.assertRaises(ComputerError):
+            self.c.write_clipboard("hi")
+
+    def test_xclip_argv_is_built_correctly(self):
+        rargv, renv = self.c.build_xclip(["-selection", "clipboard", "-o"])
+        self.assertEqual(rargv, ["xclip", "-selection", "clipboard", "-o"])
+        self.assertEqual(renv["DISPLAY"], ":10")
+        wargv, _ = self.c.build_xclip(["-selection", "clipboard", "-i"])
+        self.assertEqual(wargv, ["xclip", "-selection", "clipboard", "-i"])
+
+
+class OpenApplicationAndDisplayTest(unittest.TestCase):
+    def setUp(self):
+        self.c = Computer(display=":10")
+
+    def test_wmctrl_argv_is_built_correctly(self):
+        argv, env = self.c.build_wmctrl(["-a", "Firefox"])
+        self.assertEqual(argv, ["wmctrl", "-a", "Firefox"])
+        self.assertEqual(env["DISPLAY"], ":10")
+
+    def test_open_application_degrades_without_binaries(self):
+        # wmctrl/xdotool are absent on the runner image -> graceful no-op, never
+        # a crash. (When a binary is present this returns focused True/False.)
+        out = self.c.open_application("Firefox")
+        self.assertEqual(out["app"], "Firefox")
+        self.assertIn("focused", out)
+        self.assertIsInstance(out["focused"], bool)
+
+    def test_switch_display_is_a_noop_returning_current(self):
+        out = self.c.switch_display("auto")
+        self.assertEqual(out["display"], ":10")
+        self.assertFalse(out["switched"])
+
+
+class CaptureSessionTest(unittest.TestCase):
+    """AC3 — image-space -> device-pixel mapping from measured geometry."""
+
+    def test_to_device_maps_image_space_to_device_pixels(self):
+        # A 1366x768 image on a 1920x1080 device -> ~x1.406.
+        s = CaptureSession(1920, 1080, 1366, 768)
+        self.assertEqual(s.to_device(683, 384), (960, 540))    # centre
+        self.assertEqual(s.to_device(0, 0), (0, 0))
+        self.assertEqual(s.to_device(1366, 768), (1920, 1080))  # far corner
+
+    def test_to_device_is_identity_when_image_equals_device(self):
+        s = CaptureSession(1366, 768, 1366, 768)
+        self.assertEqual(s.to_device(640, 480), (640, 480))
+
+    def test_round_trip_image_to_device_is_stable(self):
+        s = CaptureSession(1920, 1080, 1366, 768)
+        # device->image (scale_coordinates COMPUTER) then image->device returns
+        # the original, within rounding.
+        c = Computer(width=1920, height=1080)
+        ix, iy = c.scale_coordinates(ScalingSource.COMPUTER, 960, 540)
+        self.assertEqual(s.to_device(ix, iy), (960, 540))
+
+    def test_computer_to_device_uses_the_recorded_session(self):
+        c = Computer(display=":10")
+        with self.assertRaises(ComputerError):
+            c.to_device(10, 10)  # no session established yet
+        c.last_capture = CaptureSession(1920, 1080, 1366, 768)
+        self.assertEqual(c.to_device(683, 384), (960, 540))
+
+
+class ScalingTargetTest(unittest.TestCase):
+    """The downscale target is keyed on the MEASURED size, not self.width/height."""
+
+    def test_downscale_target_is_measured_basis(self):
+        c = Computer(display=":10")
+        self.assertEqual(c._scaling_target(1920, 1080), (1366, 768))
+        self.assertEqual(c._scaling_target(1600, 1000), (1280, 800))
+        self.assertIsNone(c._scaling_target(1366, 768))    # already at/below target
+        self.assertIsNone(c._scaling_target(1000, 1000))   # no matching aspect
+
+    def test_disabled_scaling_has_no_target(self):
+        c = Computer(display=":10", scaling_enabled=False)
+        self.assertIsNone(c._scaling_target(1920, 1080))
+
+
+class ZoomRegionTest(unittest.TestCase):
+    """AC2 — region (x0,y0,x1,y1) validation + image-space -> device-rect."""
+
+    def test_region_maps_to_a_device_rect(self):
+        s = CaptureSession(1920, 1080, 1366, 768)
+        x0, y0, x1, y1 = Computer._validate_region([100, 100, 200, 200], 1366, 768)
+        dx0, dy0 = s.to_device(x0, y0)
+        dx1, dy1 = s.to_device(x1, y1)
+        self.assertEqual((dx0, dy0, dx1 - dx0, dy1 - dy0), (141, 141, 140, 140))
+
+    def test_region_validation_rejects_degenerate_and_oob(self):
+        for bad in ([200, 100, 100, 200], [100, 200, 200, 100], [1, 2, 3]):
+            with self.assertRaises(ComputerError):
+                Computer._validate_region(bad, 1366, 768)
+        with self.assertRaises(ComputerError):  # entirely off-screen
+            Computer._validate_region([2000, 100, 3000, 200], 1366, 768)
+
+    def test_region_clamps_to_image_bounds(self):
+        self.assertEqual(
+            Computer._validate_region([-10, -10, 5000, 5000], 1366, 768),
+            (0, 0, 1366, 768),
+        )
+
+
+@unittest.skipUnless(
+    os.environ.get("DISPLAY"), "no DISPLAY (run via ./run_tests.sh / xvfb-run)"
+)
+class CaptureLiveTest(unittest.TestCase):
+    """AC1/AC2/AC3 against a real display — screenshot/zoom + save_to_disk."""
+
+    def setUp(self):
+        self.save_dir = tempfile.mkdtemp(prefix="cu-test-save-")
+        os.environ["CU_SAVE_DIR"] = self.save_dir
+        os.environ["CU_SCREENSHOT_DELAY"] = "0"
+        self.c = Computer()
+
+    def tearDown(self):
+        os.environ.pop("CU_SAVE_DIR", None)
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_screenshot_records_a_measured_session(self):
+        cap = self.c.screenshot()
+        s = self.c.last_capture
+        self.assertIsNotNone(s)
+        # device >= image (only ever downscale), both non-zero.
+        self.assertGreaterEqual(s.device_width, s.image_width)
+        self.assertGreaterEqual(s.device_height, s.image_height)
+        self.assertGreater(s.image_width, 0)
+        self.assertEqual((cap.width, cap.height), (s.image_width, s.image_height))
+        self.assertIsNone(cap.path)  # not written unless asked
+
+    def test_screenshot_save_to_disk_writes_a_file(self):
+        cap = self.c.screenshot(save_to_disk=True)
+        self.assertIsNotNone(cap.path)
+        self.assertTrue(Path(cap.path).is_file())
+        self.assertTrue(cap.path.startswith(self.save_dir))
+        self.assertEqual(_png_size(base64.b64decode(cap.data_b64)),
+                         (cap.width, cap.height))
+
+    def test_zoom_is_read_only_and_matches_the_device_rect(self):
+        self.c.screenshot()
+        before = self.c.last_capture
+        z = self.c.zoom([100, 100, 300, 250], save_to_disk=True)
+        # zoom must NOT move the click-coordinate origin (AC2).
+        self.assertEqual(self.c.last_capture, before)
+        self.assertTrue(Path(z.path).is_file())
+        # the crop equals the device rect derived from the session (genuine
+        # magnification: device px > the image-space region on a downscaled :10).
+        dx0, dy0 = before.to_device(100, 100)
+        dx1, dy1 = before.to_device(300, 250)
+        self.assertEqual((z.width, z.height),
+                         (max(1, dx1 - dx0), max(1, dy1 - dy0)))
+
+    def test_zoom_establishes_the_session_when_called_first(self):
+        self.assertIsNone(self.c.last_capture)
+        z = self.c.zoom([10, 10, 110, 90])
+        self.assertIsNotNone(self.c.last_capture)
+        self.assertGreater(z.width, 0)
+        self.assertGreater(z.height, 0)
 
 
 if __name__ == "__main__":

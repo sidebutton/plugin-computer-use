@@ -36,6 +36,9 @@ class StdioServer:
             tempfile.gettempdir(), f"cu-test-lock-{os.getpid()}.lock"
         )
         env["CU_SCREENSHOT_DELAY"] = "0"
+        # Saved captures land in an isolated dir we remove in close().
+        self.save_dir = tempfile.mkdtemp(prefix=f"cu-test-save-{os.getpid()}-")
+        env["CU_SAVE_DIR"] = self.save_dir
         self.proc = subprocess.Popen(
             [sys.executable, str(SERVER)],
             stdin=subprocess.PIPE,
@@ -81,6 +84,7 @@ class StdioServer:
                         stream.close()
                 except Exception:
                     pass
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
 
 class StdioRoundTripTest(unittest.TestCase):
@@ -132,6 +136,139 @@ class StdioRoundTripTest(unittest.TestCase):
         height = int.from_bytes(raw[20:24], "big")
         self.assertGreater(width, 0)
         self.assertGreater(height, 0)
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY"), "no DISPLAY (run via ./run_tests.sh / xvfb-run)"
+    )
+    def test_ac1_screenshot_save_to_disk_returns_a_path_block(self):
+        resp = self.server.request(
+            "tools/call",
+            {"name": "screenshot", "arguments": {"save_to_disk": True}},
+            mid=7,
+        )
+        result = resp["result"]
+        self.assertFalse(result.get("isError"), msg=str(result))
+        blocks = result["content"]
+        self.assertEqual(blocks[0]["type"], "image")
+        self.assertEqual(blocks[0]["mimeType"], "image/png")
+        # A text block beside the image carries the saved path; the file exists.
+        texts = [b["text"] for b in blocks if b["type"] == "text"]
+        self.assertTrue(texts, msg=str(blocks))
+        path = texts[0].split("Saved to disk:", 1)[1].strip()
+        self.assertTrue(os.path.isfile(path), path)
+        self.assertTrue(path.startswith(self.server.save_dir), path)
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY"), "no DISPLAY (run via ./run_tests.sh / xvfb-run)"
+    )
+    def test_ac2_zoom_round_trips_a_png_and_establishes_session(self):
+        # Called on a fresh server with no prior screenshot -> lazy session.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "zoom", "arguments": {"region": [100, 100, 400, 300]}},
+            mid=8,
+        )
+        result = resp["result"]
+        self.assertFalse(result.get("isError"), msg=str(result))
+        block = result["content"][0]
+        self.assertEqual(block["type"], "image")
+        self.assertEqual(block["mimeType"], "image/png")
+        raw = base64.b64decode(block["data"])
+        self.assertTrue(raw.startswith(PNG_MAGIC), "payload is not a PNG")
+        width = int.from_bytes(raw[16:20], "big")
+        height = int.from_bytes(raw[20:24], "big")
+        self.assertGreater(width, 0)
+        self.assertGreater(height, 0)
+
+    def test_request_access_then_list_granted_reflects_it(self):
+        resp = self.server.request(
+            "tools/call",
+            {
+                "name": "request_access",
+                "arguments": {
+                    "apps": ["Firefox"],
+                    "reason": "drive the browser",
+                    "clipboardRead": True,
+                },
+            },
+            mid=10,
+        )
+        granted = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(resp["result"]["isError"])
+        self.assertEqual(granted["grantedApplications"], ["Firefox"])
+        self.assertIs(granted["screenshotFiltering"], False)
+        self.assertTrue(granted["clipboardRead"])
+        # The grant persists in the long-lived session.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "list_granted_applications", "arguments": {}},
+            mid=11,
+        )
+        listed = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(listed["applications"], ["Firefox"])
+        self.assertTrue(listed["clipboardRead"])
+
+    def test_read_clipboard_without_grant_is_error(self):
+        resp = self.server.request(
+            "tools/call", {"name": "read_clipboard", "arguments": {}}, mid=12
+        )
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("clipboardRead", resp["result"]["content"][0]["text"])
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY") and shutil.which("xclip"),
+        "needs xclip + a DISPLAY for the X clipboard round-trip",
+    )
+    def test_clipboard_write_then_read_round_trips(self):
+        payload = "sidebutton clipboard round-trip 1404"
+        # Grant read+write, then write -> read back.
+        self.server.request(
+            "tools/call",
+            {
+                "name": "request_access",
+                "arguments": {
+                    "apps": ["xterm"],
+                    "reason": "clipboard test",
+                    "clipboardRead": True,
+                    "clipboardWrite": True,
+                },
+            },
+            mid=13,
+        )
+        wresp = self.server.request(
+            "tools/call",
+            {"name": "write_clipboard", "arguments": {"text": payload}},
+            mid=14,
+        )
+        self.assertFalse(wresp["result"]["isError"], msg=str(wresp))
+        rresp = self.server.request(
+            "tools/call", {"name": "read_clipboard", "arguments": {}}, mid=15
+        )
+        self.assertFalse(rresp["result"]["isError"], msg=str(rresp))
+        self.assertEqual(rresp["result"]["content"][0]["text"], payload)
+
+    def test_switch_display_is_a_noop(self):
+        resp = self.server.request(
+            "tools/call",
+            {"name": "switch_display", "arguments": {"display": "auto"}},
+            mid=16,
+        )
+        out = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(resp["result"]["isError"])
+        self.assertFalse(out["switched"])
+        self.assertTrue(out["display"])  # reports the current display
+
+    def test_open_application_degrades_gracefully(self):
+        # wmctrl/xdotool absent on this image -> a non-error best-effort result.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "open_application", "arguments": {"app": "Firefox"}},
+            mid=17,
+        )
+        out = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(resp["result"]["isError"])
+        self.assertEqual(out["app"], "Firefox")
+        self.assertIn("focused", out)
 
     def _assert_keyboard_dispatched(self, resp):
         """The call reached the keyboard handler, not the pending-owner stub.

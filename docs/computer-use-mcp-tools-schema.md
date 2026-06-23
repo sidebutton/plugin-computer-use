@@ -4,12 +4,12 @@
 
 Tool names are the **bare canonical** Anthropic computer-use action ids. Several collide with core SideButton MCP tools (`screenshot`, `type`, `scroll`, `wait`, `click`); namespacing on aggregation is deferred to the service engine (SCRUM-1406).
 
-**24 tools, 4 implemented** (`screenshot`, `type`, `key`, `hold_key`). The rest are declared and return a pending-owner error until their sibling ticket lands.
+**24 tools, 11 implemented** (`screenshot`, `zoom`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
 
 | Tool | Owner | Input | Status |
 | --- | --- | --- | --- |
-| `screenshot` | SCRUM-1400 | — | implemented |
-| `zoom` | SCRUM-1400 | `region` | declared |
+| `screenshot` | SCRUM-1400 | `save_to_disk`? | implemented |
+| `zoom` | SCRUM-1400 | `region`, `save_to_disk`? | implemented |
 | `left_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
 | `right_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
 | `middle_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
@@ -23,12 +23,12 @@ Tool names are the **bare canonical** Anthropic computer-use action ids. Several
 | `type` | SCRUM-1403 | `text` | implemented |
 | `key` | SCRUM-1403 | `text`, `repeat`? | implemented |
 | `hold_key` | SCRUM-1403 | `text`, `duration` | implemented |
-| `read_clipboard` | SCRUM-1404 | — | declared |
-| `write_clipboard` | SCRUM-1404 | `text` | declared |
-| `request_access` | SCRUM-1404 | `applications`? | declared |
-| `list_granted_applications` | SCRUM-1404 | — | declared |
-| `open_application` | SCRUM-1404 | `name` | declared |
-| `switch_display` | SCRUM-1404 | `display` | declared |
+| `read_clipboard` | SCRUM-1404 | — | implemented |
+| `write_clipboard` | SCRUM-1404 | `text` | implemented |
+| `request_access` | SCRUM-1404 | `apps`, `reason`, `clipboardRead`?, `clipboardWrite`?, `systemKeyCombos`? | implemented |
+| `list_granted_applications` | SCRUM-1404 | — | implemented |
+| `open_application` | SCRUM-1404 | `app` | implemented |
+| `switch_display` | SCRUM-1404 | `display` | implemented |
 | `computer_batch` | SCRUM-1405 | `actions` | declared |
 | `wait` | SCRUM-1405 | `duration` | declared |
 | `cursor_position` | SCRUM-1405 | — | declared |
@@ -39,18 +39,23 @@ _`?` marks an optional property._
 
 ### `screenshot`
 
-Capture the active display (DISPLAY=:10) and return a base64-encoded PNG. Implemented in SCRUM-1397 as the proof action.
+Capture the active display (DISPLAY=:10) and return a base64-encoded PNG image block. The returned image is the coordinate space that subsequent click/move calls refer to. Set save_to_disk to also write the PNG and return its path.
 
 ```json
 {
   "type": "object",
-  "properties": {}
+  "properties": {
+    "save_to_disk": {
+      "type": "boolean",
+      "description": "Save the image to disk and return the saved path in the tool result, so it can be attached to a message for the user. Only set this when you intend to share the image."
+    }
+  }
 }
 ```
 
 ### `zoom`
 
-Capture and return a magnified PNG of a sub-region of the screen.
+Take a higher-resolution screenshot of a region of the last full-screen screenshot — use it to inspect small text, button labels, or fine UI detail. Coordinates in later click calls still refer to the full-screen screenshot, never the zoomed image. Read-only.
 
 ```json
 {
@@ -63,7 +68,11 @@ Capture and return a magnified PNG of a sub-region of the screen.
       },
       "minItems": 4,
       "maxItems": 4,
-      "description": "[x, y, width, height] region to magnify."
+      "description": "(x0, y0, x1, y1): rectangle to zoom into, in the coordinate space of the most recent full-screen screenshot. x0,y0 = top-left, x1,y1 = bottom-right."
+    },
+    "save_to_disk": {
+      "type": "boolean",
+      "description": "Save the image to disk and return the saved path in the tool result, so it can be attached to a message for the user. Only set this when you intend to share the image."
     }
   },
   "required": [
@@ -453,26 +462,46 @@ Write text to the X clipboard (via xclip).
 
 ### `request_access`
 
-Request a session grant for one or more applications (Linux stub: auto-grants and returns screenshotFiltering=false; the real grant model lands with the service engine).
+Request a session grant to control one or more applications; must be called before the other tools. Linux stub: auto-grants the requested apps (no compositor dialog) and returns screenshotFiltering=false. The clipboardRead/clipboardWrite/systemKeyCombos flags are honoured so call shapes match native.
 
 ```json
 {
   "type": "object",
   "properties": {
-    "applications": {
+    "apps": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "Applications to request access to."
+      "description": "Application display names or bundle identifiers to request access to."
+    },
+    "reason": {
+      "type": "string",
+      "description": "One-sentence explanation shown to the user in the native approval dialog (no surface on Linux)."
+    },
+    "clipboardRead": {
+      "type": "boolean",
+      "description": "Also request permission to read the clipboard."
+    },
+    "clipboardWrite": {
+      "type": "boolean",
+      "description": "Also request permission to write the clipboard."
+    },
+    "systemKeyCombos": {
+      "type": "boolean",
+      "description": "Also request permission to send system-level key combos (quit/switch app, lock screen)."
     }
-  }
+  },
+  "required": [
+    "apps",
+    "reason"
+  ]
 }
 ```
 
 ### `list_granted_applications`
 
-Return the set of applications currently granted desktop access (Linux stub: echoes the granted set).
+Return the applications currently in the session allowlist plus the active grant flags and coordinate mode (Linux stub: echoes the auto-granted set). No side effects.
 
 ```json
 {
@@ -483,18 +512,19 @@ Return the set of applications currently granted desktop access (Linux stub: ech
 
 ### `open_application`
 
-Launch or focus a desktop application by name.
+Bring an application to the front, launching it if necessary. Linux: best-effort window focus via wmctrl -a / xdotool windowactivate (primary target is the single RDP window); degrades to a no-op when neither binary is present.
 
 ```json
 {
   "type": "object",
   "properties": {
-    "name": {
-      "type": "string"
+    "app": {
+      "type": "string",
+      "description": "Display name or bundle identifier of the application to focus."
     }
   },
   "required": [
-    "name"
+    "app"
   ]
 }
 ```
