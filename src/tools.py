@@ -162,32 +162,44 @@ _KEYBOARD = [
 ]
 
 # clipboard + session stubs (SCRUM-1404)
+# Names + count are the authoritative 6-tool group from SCRUM-1404 (clipboard is
+# read/write split, and list_granted_applications pairs with request_access).
+# This is the 2-tool delta that brings the surface to the epic's 24 (SCRUM-1399).
 _CLIPBOARD = [
     {
-        "name": "clipboard",
-        "description": "Get or set the X clipboard contents (via xclip).",
-        "inputSchema": _obj(
-            {
-                "action": {"type": "string", "enum": ["get", "set"]},
-                "text": {
-                    "type": "string",
-                    "description": "Text to write when action='set'.",
-                },
-            },
-            required=["action"],
-        ),
+        "name": "read_clipboard",
+        "description": "Read the X clipboard contents (via xclip).",
+        "inputSchema": _obj({}),
+    },
+    {
+        "name": "write_clipboard",
+        "description": "Write text to the X clipboard (via xclip).",
+        "inputSchema": _obj({"text": {"type": "string"}}, required=["text"]),
     },
     {
         "name": "request_access",
-        "description": "Request a session grant to drive the desktop (session "
-        "stub; the grant model lands with the service engine).",
+        "description": "Request a session grant for one or more applications "
+        "(Linux stub: auto-grants and returns screenshotFiltering=false; the real "
+        "grant model lands with the service engine).",
         "inputSchema": _obj(
-            {"scope": {"type": "string", "description": "Requested access scope."}}
+            {
+                "applications": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Applications to request access to.",
+                }
+            }
         ),
     },
     {
+        "name": "list_granted_applications",
+        "description": "Return the set of applications currently granted desktop "
+        "access (Linux stub: echoes the granted set).",
+        "inputSchema": _obj({}),
+    },
+    {
         "name": "open_application",
-        "description": "Launch a desktop application by name.",
+        "description": "Launch or focus a desktop application by name.",
         "inputSchema": _obj({"name": {"type": "string"}}, required=["name"]),
     },
     {

@@ -4,7 +4,7 @@
 
 Tool names are the **bare canonical** Anthropic computer-use action ids. Several collide with core SideButton MCP tools (`screenshot`, `type`, `scroll`, `wait`, `click`); namespacing on aggregation is deferred to the service engine (SCRUM-1406).
 
-**22 tools.** Only `screenshot` is implemented in SCRUM-1397 (the proof action); the rest are declared and return a pending-owner error until their sibling ticket lands.
+**24 tools.** Only `screenshot` is implemented in SCRUM-1397 (the proof action); the rest are declared and return a pending-owner error until their sibling ticket lands.
 
 | Tool | Owner | Input | Status |
 | --- | --- | --- | --- |
@@ -23,8 +23,10 @@ Tool names are the **bare canonical** Anthropic computer-use action ids. Several
 | `type` | SCRUM-1403 | `text` | declared |
 | `key` | SCRUM-1403 | `text` | declared |
 | `hold_key` | SCRUM-1403 | `text`, `duration` | declared |
-| `clipboard` | SCRUM-1404 | `action`, `text`? | declared |
-| `request_access` | SCRUM-1404 | `scope`? | declared |
+| `read_clipboard` | SCRUM-1404 | — | declared |
+| `write_clipboard` | SCRUM-1404 | `text` | declared |
+| `request_access` | SCRUM-1404 | `applications`? | declared |
+| `list_granted_applications` | SCRUM-1404 | — | declared |
 | `open_application` | SCRUM-1404 | `name` | declared |
 | `switch_display` | SCRUM-1404 | `display` | declared |
 | `computer_batch` | SCRUM-1405 | `actions` | declared |
@@ -415,51 +417,68 @@ Hold a key (or chord) down for a duration in seconds.
 
 ## Clipboard + session (SCRUM-1404)
 
-### `clipboard`
+### `read_clipboard`
 
-Get or set the X clipboard contents (via xclip).
+Read the X clipboard contents (via xclip).
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+### `write_clipboard`
+
+Write text to the X clipboard (via xclip).
 
 ```json
 {
   "type": "object",
   "properties": {
-    "action": {
-      "type": "string",
-      "enum": [
-        "get",
-        "set"
-      ]
-    },
     "text": {
-      "type": "string",
-      "description": "Text to write when action='set'."
+      "type": "string"
     }
   },
   "required": [
-    "action"
+    "text"
   ]
 }
 ```
 
 ### `request_access`
 
-Request a session grant to drive the desktop (session stub; the grant model lands with the service engine).
+Request a session grant for one or more applications (Linux stub: auto-grants and returns screenshotFiltering=false; the real grant model lands with the service engine).
 
 ```json
 {
   "type": "object",
   "properties": {
-    "scope": {
-      "type": "string",
-      "description": "Requested access scope."
+    "applications": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Applications to request access to."
     }
   }
 }
 ```
 
+### `list_granted_applications`
+
+Return the set of applications currently granted desktop access (Linux stub: echoes the granted set).
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
 ### `open_application`
 
-Launch a desktop application by name.
+Launch or focus a desktop application by name.
 
 ```json
 {

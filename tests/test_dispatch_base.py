@@ -105,10 +105,12 @@ class ToolSurfaceTest(unittest.TestCase):
             "mouse_move", "left_click_drag", "scroll", "left_mouse_down",
             "left_mouse_up",
             "type", "key", "hold_key",
-            "clipboard", "request_access", "open_application", "switch_display",
+            "read_clipboard", "write_clipboard", "request_access",
+            "list_granted_applications", "open_application", "switch_display",
             "computer_batch", "wait", "cursor_position",
         }
         self.assertEqual(set(TOOL_NAMES), expected)
+        self.assertEqual(len(TOOL_NAMES), 24)  # the epic's 24-tool surface
 
     def test_every_tool_has_a_valid_input_schema(self):
         for tool in TOOLS:

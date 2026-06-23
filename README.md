@@ -30,7 +30,7 @@ a **single, long-lived child process** that speaks MCP over stdio.
 
 ## Tool surface
 
-22 tools, grouped by the sibling ticket that owns each body. Only `screenshot`
+24 tools, grouped by the sibling ticket that owns each body. Only `screenshot`
 is implemented here; the rest are declared and return a clear pending-owner error
 until their ticket lands. Full input schemas:
 [`docs/computer-use-mcp-tools-schema.md`](docs/computer-use-mcp-tools-schema.md).
@@ -41,13 +41,17 @@ until their ticket lands. Full input schemas:
 | click | SCRUM-1401 | `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click` |
 | move / drag / scroll | SCRUM-1402 | `mouse_move`, `left_click_drag`, `scroll`, `left_mouse_down`, `left_mouse_up` |
 | keyboard | SCRUM-1403 | `type`, `key`, `hold_key` |
-| clipboard + session | SCRUM-1404 | `clipboard`, `request_access`, `open_application`, `switch_display` |
+| clipboard + session | SCRUM-1404 | `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display` |
 | utility / batch | SCRUM-1405 | `computer_batch`, `wait`, `cursor_position` |
 
-> **Surface count.** The epic text references a "24-tool" surface; the work
-> plan's per-group enumeration names the **22** above. The 2-tool delta needs the
-> authoritative schema doc / reporter confirmation (AC4) before siblings build —
-> `src/tools.py` is the single source of truth and is trivially extended.
+> **Surface count.** This is the **24-tool** surface the epic
+> ([SCRUM-1399](https://aictpo.atlassian.net/browse/SCRUM-1399)) specifies. The
+> clipboard + session group follows the explicit enumeration in
+> [SCRUM-1404](https://aictpo.atlassian.net/browse/SCRUM-1404) (`read_clipboard` /
+> `write_clipboard` split + `list_granted_applications`), which is the 2-tool
+> delta over the work plan's interim count of 22. `src/tools.py` is the single
+> source of truth; `docs/computer-use-mcp-tools-schema.md` (AC4) is generated
+> from it.
 
 > **Bare names + collisions.** Names are the canonical Anthropic action ids.
 > `screenshot`, `type`, `scroll`, `wait`, `click` collide with **core** SideButton
@@ -86,7 +90,7 @@ printf '%s\n' \
   | DISPLAY=:10 python3 src/server.py
 ```
 
-`initialize` returns the handshake, `tools/list` the 22-tool surface, and the
+`initialize` returns the handshake, `tools/list` the 24-tool surface, and the
 `screenshot` call a base64 PNG image block.
 
 ## Test

@@ -348,44 +348,55 @@
       }
     },
     {
-      "name": "clipboard",
-      "description": "Get or set the X clipboard contents (via xclip).",
+      "name": "read_clipboard",
+      "description": "Read the X clipboard contents (via xclip).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "write_clipboard",
+      "description": "Write text to the X clipboard (via xclip).",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "get",
-              "set"
-            ]
-          },
           "text": {
-            "type": "string",
-            "description": "Text to write when action='set'."
+            "type": "string"
           }
         },
         "required": [
-          "action"
+          "text"
         ]
       }
     },
     {
       "name": "request_access",
-      "description": "Request a session grant to drive the desktop (session stub; the grant model lands with the service engine).",
+      "description": "Request a session grant for one or more applications (Linux stub: auto-grants and returns screenshotFiltering=false; the real grant model lands with the service engine).",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "scope": {
-            "type": "string",
-            "description": "Requested access scope."
+          "applications": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Applications to request access to."
           }
         }
       }
     },
     {
+      "name": "list_granted_applications",
+      "description": "Return the set of applications currently granted desktop access (Linux stub: echoes the granted set).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
       "name": "open_application",
-      "description": "Launch a desktop application by name.",
+      "description": "Launch or focus a desktop application by name.",
       "inputSchema": {
         "type": "object",
         "properties": {
