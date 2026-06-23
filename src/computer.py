@@ -636,6 +636,77 @@ class Computer:
             self.run_xdotool(["keyup", "--", text])
         return f"held {text} for {duration}s"
 
+    # --- click (SCRUM-1401) ----------------------------------------------
+    # Pointer clicks at a screenshot-session coordinate, optionally holding
+    # modifier key(s) for the duration of the click. Button numbers are the
+    # xdotool/X11 convention (1=left, 2=middle, 3=right). The `--` separator and
+    # the keydown -> try -> keyup-in-`finally` release are the same machinery the
+    # keyboard group proves (no stranded modifier if the click raises).
+    _BUTTONS = {"left": 1, "middle": 2, "right": 3}
+
+    @staticmethod
+    def _coordinate(coordinate) -> tuple[int, int]:
+        """Validate an ``[x, y]`` image-space coordinate (two numbers)."""
+        if not isinstance(coordinate, (list, tuple)) or len(coordinate) != 2:
+            raise ComputerError("coordinate must be [x, y]")
+        try:
+            x, y = (int(round(float(v))) for v in coordinate)
+        except (TypeError, ValueError):
+            raise ComputerError(
+                f"coordinate values must be numbers: {coordinate!r}"
+            )
+        return x, y
+
+    @staticmethod
+    def _click_verb(button: str, count: int) -> str:
+        """The canonical action name for a (button, count) click, for the ack."""
+        if button == "left" and count == 2:
+            return "double_click"
+        if button == "left" and count == 3:
+            return "triple_click"
+        base = f"{button}_click"
+        return base if count == 1 else f"{base} x{count}"
+
+    def click(
+        self,
+        coordinate,
+        button: str = "left",
+        count: int = 1,
+        text: str | None = None,
+    ) -> str:
+        """Click ``button`` ``count`` times at an image-space ``coordinate``.
+
+        The coordinate is mapped to real device pixels via the recorded screenshot
+        session (:meth:`to_device`), so a click before any screenshot raises the
+        clear "no screenshot session yet" error — look before you click (AC3).
+        Optional ``text`` modifier(s) (e.g. ``'ctrl'``, ``'shift+alt'``) are held
+        down for the click and ALWAYS released (``keyup`` in ``finally``), the same
+        guarantee as :meth:`hold_key` — no stranded modifier if the click raises.
+        """
+        if button not in self._BUTTONS:
+            raise ComputerError(
+                f"unknown button {button!r} (expected left/middle/right)"
+            )
+        x, y = self._coordinate(coordinate)
+        dx, dy = self.to_device(x, y)
+        argv = ["mousemove", "--sync", dx, dy, "click"]
+        if count > 1:
+            # Explicit inter-click delay so double/triple register as one gesture.
+            argv += ["--repeat", count, "--delay", 100]
+        argv.append(self._BUTTONS[button])
+        if text:
+            # keydown/keyup are separate invocations with keyup in `finally`: the
+            # modifier is held across the click and released even if it raises.
+            self.run_xdotool(["keydown", "--", text])
+            try:
+                self.run_xdotool(argv)
+            finally:
+                self.run_xdotool(["keyup", "--", text])
+        else:
+            self.run_xdotool(argv)
+        ack = f"{self._click_verb(button, count)} at ({dx}, {dy})"
+        return ack + (f" holding {text}" if text else "")
+
     # --- utility (SCRUM-1405) --------------------------------------------
     def wait(self, duration) -> str:
         """Sleep ``duration`` seconds in this (persistent) process.

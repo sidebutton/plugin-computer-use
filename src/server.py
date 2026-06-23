@@ -44,6 +44,12 @@ class Server:
             # capture (SCRUM-1397 / 1400)
             "screenshot": self._screenshot,
             "zoom": self._zoom,
+            # click (SCRUM-1401)
+            "left_click": self._left_click,
+            "right_click": self._right_click,
+            "middle_click": self._middle_click,
+            "double_click": self._double_click,
+            "triple_click": self._triple_click,
             # keyboard (SCRUM-1403)
             "type": self._type,
             "key": self._key,
@@ -141,6 +147,33 @@ class Server:
             save_to_disk=bool(args.get("save_to_disk", False)),
         )
         return _capture_result(cap)
+
+    # Click group (SCRUM-1401): map each canonical action to a (button, count)
+    # click at a screenshot-session coordinate; optional `text` holds modifiers.
+    def _click(self, args: dict, button: str, count: int) -> dict:
+        return _tool_text(
+            self.computer.click(
+                coordinate=args.get("coordinate"),
+                button=button,
+                count=count,
+                text=args.get("text"),
+            )
+        )
+
+    def _left_click(self, args: dict) -> dict:
+        return self._click(args, "left", 1)
+
+    def _right_click(self, args: dict) -> dict:
+        return self._click(args, "right", 1)
+
+    def _middle_click(self, args: dict) -> dict:
+        return self._click(args, "middle", 1)
+
+    def _double_click(self, args: dict) -> dict:
+        return self._click(args, "left", 2)
+
+    def _triple_click(self, args: dict) -> dict:
+        return self._click(args, "left", 3)
 
     # Keyboard group (SCRUM-1403): plain text acknowledgements.
     def _type(self, args: dict) -> dict:
