@@ -140,6 +140,101 @@ class KeyboardActionTest(unittest.TestCase):
         self.assertEqual(self.calls, [["keydown", "--", "ctrl"]])
 
 
+class ClickActionTest(unittest.TestCase):
+    """click() maps the coordinate via the screenshot session, builds the right
+    xdotool argv per button/count, and holds optional modifiers for the click —
+    always releasing. No xdotool/desktop needed: ``run_xdotool`` is a recorder and
+    the session is set directly."""
+
+    def setUp(self):
+        self.c = Computer(display=":10")
+        # An identity session (image == device) so the recorded argv carries the
+        # input coordinate verbatim; the scaling mapping is exercised separately.
+        self.c.last_capture = CaptureSession(1366, 768, 1366, 768)
+        self.calls = []
+
+        def record(args, **_kw):
+            self.calls.append(list(args))
+            return ""
+
+        self.c.run_xdotool = record
+
+    def test_left_click_moves_then_clicks_button_1(self):
+        ack = self.c.click([100, 200])
+        self.assertEqual(self.calls, [["mousemove", "--sync", 100, 200, "click", 1]])
+        self.assertIn("left_click", ack)
+        self.assertIn("(100, 200)", ack)
+
+    def test_right_and_middle_use_x11_button_numbers(self):
+        self.c.click([10, 20], button="right")
+        self.c.click([10, 20], button="middle")
+        self.assertEqual(self.calls[0][-1], 3)   # right == X11 button 3
+        self.assertEqual(self.calls[1][-1], 2)   # middle == X11 button 2
+
+    def test_double_and_triple_use_repeat_with_delay(self):
+        self.c.click([5, 6], count=2)
+        self.c.click([5, 6], count=3)
+        self.assertEqual(
+            self.calls[0],
+            ["mousemove", "--sync", 5, 6, "click", "--repeat", 2, "--delay", 100, 1],
+        )
+        self.assertEqual(self.calls[1][self.calls[1].index("--repeat") + 1], 3)
+
+    def test_modifier_held_with_keydown_then_click_then_keyup(self):
+        ack = self.c.click([1, 2], text="ctrl")
+        self.assertEqual(
+            self.calls,
+            [
+                ["keydown", "--", "ctrl"],
+                ["mousemove", "--sync", 1, 2, "click", 1],
+                ["keyup", "--", "ctrl"],
+            ],
+        )
+        self.assertIn("holding ctrl", ack)
+
+    def test_modifier_released_even_if_click_raises(self):
+        # keydown succeeds, the click raises -> keyup must still run (finally), so
+        # the modifier is never left stranded down.
+        def fail_on_click(args, **_kw):
+            self.calls.append(list(args))
+            if args and args[0] == "mousemove":
+                raise ComputerError("click failed")
+            return ""
+
+        self.c.run_xdotool = fail_on_click
+        with self.assertRaises(ComputerError):
+            self.c.click([1, 2], text="shift+alt")
+        self.assertEqual(
+            self.calls,
+            [
+                ["keydown", "--", "shift+alt"],
+                ["mousemove", "--sync", 1, 2, "click", 1],
+                ["keyup", "--", "shift+alt"],
+            ],
+        )
+
+    def test_coordinate_is_mapped_through_the_session(self):
+        # A 1366x768 image on a 1920x1080 device -> centre maps to (960, 540).
+        self.c.last_capture = CaptureSession(1920, 1080, 1366, 768)
+        self.c.click([683, 384])
+        self.assertEqual(self.calls[0][:4], ["mousemove", "--sync", 960, 540])
+
+    def test_click_without_a_session_raises_and_dispatches_nothing(self):
+        self.c.last_capture = None
+        with self.assertRaises(ComputerError):
+            self.c.click([10, 10])
+        self.assertEqual(self.calls, [])  # the look-before-click guard fires first
+
+    def test_bad_coordinate_raises(self):
+        for bad in ([1], [1, 2, 3], "nope", [None, 2]):
+            with self.assertRaises(ComputerError):
+                self.c.click(bad)
+
+    def test_unknown_button_raises(self):
+        with self.assertRaises(ComputerError):
+            self.c.click([1, 2], button="back")
+
+
 class SingleOwnerLockTest(unittest.TestCase):
     def test_second_owner_is_rejected(self):
         path = os.path.join(tempfile.gettempdir(), f"cu-lock-{os.getpid()}.lock")
@@ -195,14 +290,20 @@ class ToolSurfaceTest(unittest.TestCase):
         for name in TOOL_NAMES:
             self.assertIn(name, OWNER)
 
-    def test_implemented_is_capture_keyboard_and_clipboard_session(self):
-        # capture group (SCRUM-1397 screenshot + SCRUM-1400 zoom) + keyboard
-        # group (SCRUM-1403) + clipboard/session group (SCRUM-1404).
+    def test_implemented_is_capture_click_keyboard_and_clipboard_session(self):
+        # capture group (SCRUM-1397 screenshot + SCRUM-1400 zoom) + click group
+        # (SCRUM-1401) + keyboard group (SCRUM-1403) + clipboard/session group
+        # (SCRUM-1404).
         self.assertEqual(
             IMPLEMENTED,
             {
                 "screenshot",
                 "zoom",
+                "left_click",
+                "right_click",
+                "middle_click",
+                "double_click",
+                "triple_click",
                 "type",
                 "key",
                 "hold_key",
