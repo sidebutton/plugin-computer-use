@@ -35,6 +35,16 @@ class Server:
 
     def __init__(self, computer: Computer):
         self.computer = computer
+        # name -> handler(arguments) -> MCP result. Only tools also listed in
+        # tools.IMPLEMENTED are dispatched; every other declared tool returns a
+        # pending-owner error. Sibling tickets (SCRUM-1400..1405) register their
+        # handlers here as they land.
+        self._handlers = {
+            "screenshot": self._screenshot,   # SCRUM-1397
+            "type": self._type,               # SCRUM-1403
+            "key": self._key,                 # SCRUM-1403
+            "hold_key": self._hold_key,       # SCRUM-1403
+        }
 
     def handle(self, msg) -> dict | None:
         """Return a JSON-RPC response dict, or ``None`` for a notification."""
@@ -75,25 +85,37 @@ class Server:
         if name not in TOOL_NAMES:
             return _tool_error(f"unknown tool: {name!r}")
 
-        if name == "screenshot" and name in IMPLEMENTED:
-            try:
-                b64 = self.computer.screenshot()
-            except ComputerError as exc:
-                return _tool_error(str(exc))
-            return {
-                "content": [
-                    {"type": "image", "data": b64, "mimeType": "image/png"}
-                ],
-                "isError": False,
-            }
+        handler = self._handlers.get(name) if name in IMPLEMENTED else None
+        if handler is None:
+            # Declared in the surface but its body is owned by a sibling ticket.
+            return _tool_error(
+                f"tool {name!r} is declared but not implemented yet; its body is "
+                f"owned by {owner_ticket(name)}. The dispatch base (computer.py: "
+                f"run_xdotool / scale_coordinates / screenshot) is ready for "
+                f"that work."
+            )
 
-        # Declared in the surface but not yet implemented in SCRUM-1397.
-        return _tool_error(
-            f"tool {name!r} is declared but not implemented in SCRUM-1397; its "
-            f"body is owned by {owner_ticket(name)}. The dispatch base "
-            f"(computer.py: run_xdotool / scale_coordinates / screenshot) is "
-            f"ready for that work."
-        )
+        try:
+            return handler(params.get("arguments") or {})
+        except ComputerError as exc:
+            return _tool_error(str(exc))
+
+    # --- tool handlers ---------------------------------------------------
+    def _screenshot(self, _args: dict) -> dict:
+        b64 = self.computer.screenshot()
+        return {
+            "content": [{"type": "image", "data": b64, "mimeType": "image/png"}],
+            "isError": False,
+        }
+
+    def _type(self, args: dict) -> dict:
+        return _tool_ok(self.computer.type_text(args["text"]))
+
+    def _key(self, args: dict) -> dict:
+        return _tool_ok(self.computer.press_key(args["text"], args.get("repeat", 1)))
+
+    def _hold_key(self, args: dict) -> dict:
+        return _tool_ok(self.computer.hold_key(args["text"], args["duration"]))
 
 
 def _error(mid, code: int, message: str) -> dict:
@@ -102,6 +124,10 @@ def _error(mid, code: int, message: str) -> dict:
 
 def _tool_error(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
+def _tool_ok(text: str) -> dict:
+    return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
 def main() -> int:

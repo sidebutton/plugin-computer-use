@@ -143,7 +143,18 @@ _KEYBOARD = [
         "name": "key",
         "description": "Press a key or chord using xdotool key syntax, e.g. "
         "'Return', 'ctrl+s', 'alt+Tab'.",
-        "inputSchema": _obj({"text": {"type": "string"}}, required=["text"]),
+        "inputSchema": _obj(
+            {
+                "text": {"type": "string"},
+                "repeat": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Number of times to press the key/chord "
+                    "(xdotool --repeat); defaults to 1.",
+                },
+            },
+            required=["text"],
+        ),
     },
     {
         "name": "hold_key",
@@ -263,9 +274,11 @@ OWNER = {
 TOOLS = [*_CAPTURE, *_CLICK, *_MOVE, *_KEYBOARD, *_CLIPBOARD, *_UTILITY]
 TOOL_NAMES = [t["name"] for t in TOOLS]
 
-# Implemented in this ticket (SCRUM-1397). Everything else is declared-only and
-# returns a pending-owner error until its sibling ticket lands.
-IMPLEMENTED = {"screenshot"}
+# Tools with a live body wired in server.py. Everything else is declared-only
+# and returns a pending-owner error until its sibling ticket lands.
+#   screenshot           — SCRUM-1397 (scaffold proof action)
+#   type / key / hold_key — SCRUM-1403 (keyboard group)
+IMPLEMENTED = {"screenshot", "type", "key", "hold_key"}
 
 
 def owner_ticket(name: str) -> str:
