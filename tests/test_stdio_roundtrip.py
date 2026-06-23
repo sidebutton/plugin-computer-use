@@ -10,10 +10,12 @@ Covers the SCRUM-1397 acceptance criteria:
 import base64
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -28,7 +30,7 @@ from tools import TOOL_NAMES  # noqa: E402
 class StdioServer:
     """Spawn server.py and exchange newline-delimited JSON-RPC messages."""
 
-    def __init__(self):
+    def __init__(self, extra_env=None):
         env = dict(os.environ)
         # Isolate the single-owner lock so the test never collides with a real
         # session, and skip the post-action settle delay.
@@ -39,6 +41,10 @@ class StdioServer:
         # Saved captures land in an isolated dir we remove in close().
         self.save_dir = tempfile.mkdtemp(prefix=f"cu-test-save-{os.getpid()}-")
         env["CU_SAVE_DIR"] = self.save_dir
+        # Per-instance overrides (e.g. a distinct lock path for a second server,
+        # or a short CU_IDLE_RELEASE_SECS) applied last so they win.
+        if extra_env:
+            env.update(extra_env)
         self.proc = subprocess.Popen(
             [sys.executable, str(SERVER)],
             stdin=subprocess.PIPE,
@@ -417,6 +423,69 @@ class StdioRoundTripTest(unittest.TestCase):
         result = resp["result"]
         self.assertFalse(result.get("isError"), msg=str(result))
         self.assertIn("not held", result["content"][0]["text"])
+
+    def test_request_bundled_after_a_notification_is_not_stranded(self):
+        # Regression (SCRUM-1402): a fire-and-forget notification and the request
+        # right after it can land in the pipe in a single write. The idle loop
+        # must read every line through readline() (which drains the stream buffer
+        # in order) rather than select() on the raw fd — a select() never sees a
+        # request already pulled into that buffer, so the first tools/call bundled
+        # behind `notifications/initialized` would strand until the idle tick.
+        # Sent as ONE write so both lines are buffered together; the default idle
+        # (300s) is far past the 10s guard, so a regression fails fast (no hang).
+        proc = self.server.proc
+        bundled = (
+            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            + "\n"
+            + json.dumps({"jsonrpc": "2.0", "id": 88, "method": "tools/list"})
+            + "\n"
+        )
+        proc.stdin.write(bundled)
+        proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], 10)
+        self.assertTrue(
+            ready,
+            "a request bundled behind a notification was stranded in the stream "
+            "buffer (no response within 10s)",
+        )
+        resp = json.loads(proc.stdout.readline())
+        self.assertEqual(resp["id"], 88)
+        self.assertEqual([t["name"] for t in resp["result"]["tools"]], TOOL_NAMES)
+
+    def test_idle_auto_release_clears_session_grants(self):
+        # AC4 (Q3): after CU_IDLE_RELEASE_SECS of no request, the watchdog drops a
+        # held button + session grants so a turn that ended before left_mouse_up
+        # never strands state. The grant clear is observable WITHOUT xdotool
+        # (request_access is in-memory), so it proves the idle reset truly fires.
+        # A distinct lock path lets this run alongside setUp's default server.
+        srv = StdioServer(
+            extra_env={
+                "CU_IDLE_RELEASE_SECS": "0.5",
+                "CU_LOCK_PATH": os.path.join(
+                    tempfile.gettempdir(), f"cu-test-idle-lock-{os.getpid()}.lock"
+                ),
+            }
+        )
+        self.addCleanup(srv.close)
+        srv.request("initialize", mid=1)
+        srv.request(
+            "tools/call",
+            {"name": "request_access", "arguments": {"apps": ["Slack"], "reason": "qa"}},
+            mid=2,
+        )
+        before = srv.request(
+            "tools/call",
+            {"name": "list_granted_applications", "arguments": {}},
+            mid=3,
+        )["result"]["content"][0]["text"]
+        self.assertIn("Slack", before)
+        time.sleep(1.5)  # >> 0.5s idle -> the watchdog must fire reset_held_state
+        after = srv.request(
+            "tools/call",
+            {"name": "list_granted_applications", "arguments": {}},
+            mid=4,
+        )["result"]["content"][0]["text"]
+        self.assertNotIn("Slack", after)  # grants cleared on idle
 
     @unittest.skipUnless(
         os.environ.get("DISPLAY") and shutil.which("xdotool"),

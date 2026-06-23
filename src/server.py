@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-import select
 import signal
 import sys
 from pathlib import Path
@@ -306,25 +305,48 @@ def main() -> int:
         except (ValueError, OSError):
             pass  # not the main thread (e.g. embedded) — skip handler install
 
-    idle_secs = float(
-        os.environ.get("CU_IDLE_RELEASE_SECS", DEFAULT_IDLE_RELEASE_SECS)
-    )
+    # Idle auto-release (Q3): drop a held button + grants after idle_secs of no
+    # request, then keep serving. Driven by a SIGALRM watchdog re-armed around
+    # each blocking readline — NOT a select() on the fd: readline() can pull
+    # several lines out of the fd into the stream buffer in one read, and a
+    # select() on the raw fd would never see a request left waiting in that buffer
+    # (e.g. the first tools/call bundled behind `notifications/initialized` at
+    # startup, which would then strand until the idle tick). Reading every line
+    # through readline() drains that buffer in order; the timer fires independently
+    # of the read. Set CU_IDLE_RELEASE_SECS=0 to disable (block until the next
+    # request forever).
+    try:
+        idle_secs = float(
+            os.environ.get("CU_IDLE_RELEASE_SECS", DEFAULT_IDLE_RELEASE_SECS)
+        )
+    except ValueError:
+        idle_secs = DEFAULT_IDLE_RELEASE_SECS  # malformed override -> default
+
+    def _on_idle(_signum, _frame):
+        # The interrupted readline auto-resumes (PEP 475); re-armed next request.
+        computer.reset_held_state()
+
+    idle_armed = idle_secs > 0
+    if idle_armed:
+        try:
+            signal.signal(signal.SIGALRM, _on_idle)
+        except (ValueError, OSError):
+            idle_armed = False  # not the main thread — skip the idle watchdog
+
+    def _arm_idle():
+        if idle_armed:
+            signal.setitimer(signal.ITIMER_REAL, idle_secs)
+
+    def _disarm_idle():
+        if idle_armed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+
     stdin = sys.stdin
     try:
         while True:
-            # Idle auto-release (Q3): if no request arrives within idle_secs, drop
-            # a held button + grants, then keep waiting. The protocol is strictly
-            # request->response (the peer waits for our reply), so at most one line
-            # is ever in flight — select on the fd never misses a buffered request.
-            if idle_secs > 0:
-                try:
-                    ready, _, _ = select.select([stdin], [], [], idle_secs)
-                except (OSError, ValueError):
-                    ready = [stdin]  # stdin not selectable — fall back to a read
-                if not ready:
-                    computer.reset_held_state()
-                    continue
+            _arm_idle()
             line = stdin.readline()
+            _disarm_idle()
             if line == "":
                 break  # EOF: peer closed stdin (disconnect)
             line = line.strip()
@@ -341,6 +363,7 @@ def main() -> int:
                 out.write(json.dumps(response) + "\n")
                 out.flush()
     finally:
+        _disarm_idle()  # no idle SIGALRM during teardown
         # Disconnect/stop: release a held button + grants before dropping the lock
         # (we must still own the session to release the button).
         computer.reset_held_state()
