@@ -85,6 +85,11 @@ def build_schema_doc() -> str:
     for tool in TOOLS:
         by_ticket.setdefault(OWNER[tool["name"]], []).append(tool)
 
+    # Derived from tools.IMPLEMENTED (surface order) so this prose can never go
+    # stale as sibling tickets wire up their bodies.
+    implemented = [t["name"] for t in TOOLS if t["name"] in IMPLEMENTED]
+    impl_str = ", ".join(f"`{n}`" for n in implemented)
+
     lines = [
         "# computer-use MCP tool schema",
         "",
@@ -98,8 +103,7 @@ def build_schema_doc() -> str:
         "`type`, `scroll`, `wait`, `click`); namespacing on aggregation is "
         "deferred to the service engine (SCRUM-1406).",
         "",
-        f"**{len(TOOLS)} tools, {len(IMPLEMENTED)} implemented** "
-        f"({', '.join('`' + n + '`' for n in TOOL_NAMES if n in IMPLEMENTED)}). "
+        f"**{len(TOOLS)} tools, {len(implemented)} implemented** ({impl_str}). "
         "The rest are declared and return a pending-owner error until their "
         "sibling ticket lands.",
         "",

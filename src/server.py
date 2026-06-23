@@ -38,8 +38,14 @@ class Server:
         # name -> handler(arguments) -> MCP result dict. A table (vs. an elif
         # chain) keeps the merge-conflict surface small for the sibling tickets
         # (SCRUM-1400..1405) that each wire their own group into this method.
+        # Only tools also listed in tools.IMPLEMENTED are dispatched; every other
+        # declared tool returns a pending-owner error.
         self._handlers = {
-            "screenshot": self._screenshot,
+            "screenshot": self._screenshot,                  # SCRUM-1397
+            # keyboard (SCRUM-1403)
+            "type": self._type,
+            "key": self._key,
+            "hold_key": self._hold_key,
             # clipboard + session (SCRUM-1404)
             "read_clipboard": self._read_clipboard,
             "write_clipboard": self._write_clipboard,
@@ -111,6 +117,15 @@ class Server:
             "content": [{"type": "image", "data": b64, "mimeType": "image/png"}],
             "isError": False,
         }
+
+    def _type(self, args: dict) -> dict:
+        return _tool_text(self.computer.type_text(args["text"]))
+
+    def _key(self, args: dict) -> dict:
+        return _tool_text(self.computer.press_key(args["text"], args.get("repeat", 1)))
+
+    def _hold_key(self, args: dict) -> dict:
+        return _tool_text(self.computer.hold_key(args["text"], args["duration"]))
 
     def _read_clipboard(self, args: dict) -> dict:
         return _tool_text(self.computer.read_clipboard())

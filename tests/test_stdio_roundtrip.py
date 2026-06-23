@@ -223,6 +223,47 @@ class StdioRoundTripTest(unittest.TestCase):
         self.assertEqual(out["app"], "Firefox")
         self.assertIn("focused", out)
 
+    def _assert_keyboard_dispatched(self, resp):
+        """The call reached the keyboard handler, not the pending-owner stub.
+
+        With ``xdotool`` installed the action succeeds (``isError: false``);
+        without it the dispatch base reports the missing binary. Either way the
+        tool is wired (it must NOT return the 'declared but not implemented'
+        sibling error), so the assertion holds on a runner image with or without
+        xdotool (it is a declared system_dep).
+        """
+        result = resp["result"]
+        text = result["content"][0].get("text", "")
+        self.assertNotIn("declared but not implemented", text)
+        if shutil.which("xdotool"):
+            self.assertFalse(result.get("isError"), msg=str(result))
+        else:
+            self.assertTrue(result.get("isError"))
+            self.assertIn("xdotool is not installed", text)
+
+    def test_type_round_trips(self):
+        resp = self.server.request(
+            "tools/call", {"name": "type", "arguments": {"text": "hello"}}, mid=7
+        )
+        self._assert_keyboard_dispatched(resp)
+
+    def test_key_round_trips_with_repeat(self):
+        resp = self.server.request(
+            "tools/call",
+            {"name": "key", "arguments": {"text": "ctrl+a", "repeat": 2}},
+            mid=8,
+        )
+        self._assert_keyboard_dispatched(resp)
+
+    def test_hold_key_round_trips(self):
+        # Short duration so the live path (xdotool present) stays fast.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "hold_key", "arguments": {"text": "shift", "duration": 0.05}},
+            mid=9,
+        )
+        self._assert_keyboard_dispatched(resp)
+
     def test_pending_tool_returns_owner_error(self):
         resp = self.server.request(
             "tools/call",

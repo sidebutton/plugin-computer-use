@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -407,3 +408,36 @@ class Computer:
                 "Linux/Xvfb"
             ),
         }
+
+    # --- keyboard (SCRUM-1403) -------------------------------------------
+    # Commands are fixed by the design-of-record
+    # (the-assistant/docs/plugins/computer-use.md). The `--` separator stops
+    # xdotool from parsing text/keys that begin with `-` as flags.
+    def type_text(self, text: str) -> str:
+        """Type ``text`` at the current focus (``xdotool type``)."""
+        self.run_xdotool(["type", "--delay", "12", "--", text])
+        return f"typed {len(text)} character(s)"
+
+    def press_key(self, text: str, repeat: int = 1) -> str:
+        """Press a key or chord, optionally ``repeat`` times (``xdotool key``).
+
+        ``repeat`` maps to ``--repeat`` and defaults to 1 (a single press).
+        """
+        self.run_xdotool(["key", "--repeat", repeat, "--", text])
+        return f"pressed {text}" + (f" x{repeat}" if repeat != 1 else "")
+
+    def hold_key(self, text: str, duration: float) -> str:
+        """Hold ``text`` down for ``duration`` seconds (keydown -> sleep -> keyup).
+
+        The wait lives in this (persistent) process via :func:`time.sleep`, **not**
+        inside an ``xdotool`` subprocess, so a long hold (up to ~100s) never trips
+        :meth:`run_xdotool`'s subprocess timeout. ``keyup`` runs in a ``finally``
+        so a held key/modifier is always released (no stranded modifier), even if
+        the wait is interrupted.
+        """
+        self.run_xdotool(["keydown", "--", text])
+        try:
+            time.sleep(duration)
+        finally:
+            self.run_xdotool(["keyup", "--", text])
+        return f"held {text} for {duration}s"

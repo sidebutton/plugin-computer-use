@@ -4,7 +4,7 @@
 
 Tool names are the **bare canonical** Anthropic computer-use action ids. Several collide with core SideButton MCP tools (`screenshot`, `type`, `scroll`, `wait`, `click`); namespacing on aggregation is deferred to the service engine (SCRUM-1406).
 
-**24 tools, 7 implemented** (`screenshot`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
+**24 tools, 10 implemented** (`screenshot`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
 
 | Tool | Owner | Input | Status |
 | --- | --- | --- | --- |
@@ -20,9 +20,9 @@ Tool names are the **bare canonical** Anthropic computer-use action ids. Several
 | `scroll` | SCRUM-1402 | `coordinate`, `scroll_direction`, `scroll_amount` | declared |
 | `left_mouse_down` | SCRUM-1402 | `coordinate`? | declared |
 | `left_mouse_up` | SCRUM-1402 | `coordinate`? | declared |
-| `type` | SCRUM-1403 | `text` | declared |
-| `key` | SCRUM-1403 | `text` | declared |
-| `hold_key` | SCRUM-1403 | `text`, `duration` | declared |
+| `type` | SCRUM-1403 | `text` | implemented |
+| `key` | SCRUM-1403 | `text`, `repeat`? | implemented |
+| `hold_key` | SCRUM-1403 | `text`, `duration` | implemented |
 | `read_clipboard` | SCRUM-1404 | — | implemented |
 | `write_clipboard` | SCRUM-1404 | `text` | implemented |
 | `request_access` | SCRUM-1404 | `apps`, `reason`, `clipboardRead`?, `clipboardWrite`?, `systemKeyCombos`? | implemented |
@@ -384,6 +384,11 @@ Press a key or chord using xdotool key syntax, e.g. 'Return', 'ctrl+s', 'alt+Tab
   "properties": {
     "text": {
       "type": "string"
+    },
+    "repeat": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of times to press the key/chord (xdotool --repeat); defaults to 1."
     }
   },
   "required": [

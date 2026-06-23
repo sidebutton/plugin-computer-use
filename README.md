@@ -31,9 +31,10 @@ a **single, long-lived child process** that speaks MCP over stdio.
 ## Tool surface
 
 24 tools, grouped by the sibling ticket that owns each body. `screenshot`
-(SCRUM-1397) and the **clipboard + session group (SCRUM-1404)** are implemented;
-the rest are declared and return a clear pending-owner error until their ticket
-lands. Full input schemas:
+(SCRUM-1397), the keyboard group `type` / `key` / `hold_key` (SCRUM-1403), and
+the **clipboard + session group (SCRUM-1404)** are implemented; the rest are
+declared and return a clear pending-owner error until their ticket lands. Full
+input schemas:
 [`docs/computer-use-mcp-tools-schema.md`](docs/computer-use-mcp-tools-schema.md).
 
 | Group | Ticket | Tools |
@@ -41,7 +42,7 @@ lands. Full input schemas:
 | capture | SCRUM-1400 | `screenshot` ✅, `zoom` |
 | click | SCRUM-1401 | `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click` |
 | move / drag / scroll | SCRUM-1402 | `mouse_move`, `left_click_drag`, `scroll`, `left_mouse_down`, `left_mouse_up` |
-| keyboard | SCRUM-1403 | `type`, `key`, `hold_key` |
+| keyboard | SCRUM-1403 | `type` ✅, `key` ✅, `hold_key` ✅ |
 | clipboard + session | SCRUM-1404 | `read_clipboard` ✅, `write_clipboard` ✅, `request_access` ✅, `list_granted_applications` ✅, `open_application` ✅, `switch_display` ✅ |
 | utility / batch | SCRUM-1405 | `computer_batch`, `wait`, `cursor_position` |
 
@@ -107,11 +108,23 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"screenshot","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"type","arguments":{"text":"hello"}}}' \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"key","arguments":{"text":"ctrl+a","repeat":1}}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"hold_key","arguments":{"text":"shift","duration":2}}}' \
   | DISPLAY=:10 python3 src/server.py
 ```
 
 `initialize` returns the handshake, `tools/list` the 24-tool surface, and the
-`screenshot` call a base64 PNG image block.
+`screenshot` call a base64 PNG image block. The keyboard calls each return a
+short text ack (`isError:false`); they need `xdotool` on `PATH`.
+
+### Keyboard group (SCRUM-1403)
+
+| Tool | xdotool | Notes |
+| --- | --- | --- |
+| `type` | `xdotool type --delay 12 -- <text>` | types `text` at the current focus |
+| `key` | `xdotool key --repeat <repeat> -- <text>` | chords, e.g. `ctrl+s`; optional `repeat` (default 1) |
+| `hold_key` | `keydown -- <text>` → `sleep <duration>` → `keyup -- <text>` | the hold runs in the persistent server (Python `time.sleep`), so durations up to ~100s do not trip the per-call subprocess timeout; `keyup` runs in a `finally` so a held key/modifier is always released |
 
 ## Test
 
