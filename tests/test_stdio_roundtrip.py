@@ -311,6 +311,100 @@ class StdioRoundTripTest(unittest.TestCase):
         )
         self._assert_keyboard_dispatched(resp)
 
+    # --- utility group (SCRUM-1405) -------------------------------------
+    def test_wait_round_trips(self):
+        # wait sleeps in-process (no xdotool), so this is wired on any image.
+        resp = self.server.request(
+            "tools/call", {"name": "wait", "arguments": {"duration": 0.01}}, mid=20
+        )
+        result = resp["result"]
+        self.assertFalse(result.get("isError"), msg=str(result))
+        self.assertIn("waited", result["content"][0]["text"])
+
+    def test_cursor_position_is_wired(self):
+        # xdotool-gated like the keyboard group: present -> returns [x, y];
+        # absent -> the dispatch base reports the missing binary. Either way the
+        # tool must NOT be the pending-owner stub.
+        resp = self.server.request(
+            "tools/call", {"name": "cursor_position", "arguments": {}}, mid=21
+        )
+        result = resp["result"]
+        text = result["content"][0].get("text", "")
+        self.assertNotIn("declared but not implemented", text)
+        if shutil.which("xdotool"):
+            self.assertFalse(result.get("isError"), msg=str(result))
+            self.assertEqual(len(json.loads(text)), 2)  # [x, y]
+        else:
+            self.assertTrue(result.get("isError"))
+            self.assertIn("xdotool is not installed", text)
+
+    def test_computer_batch_runs_pure_steps_in_order(self):
+        # switch_display + list_granted_applications need no xdotool/desktop, so
+        # this exercises the full batch round-trip deterministically on any image.
+        resp = self.server.request(
+            "tools/call",
+            {
+                "name": "computer_batch",
+                "arguments": {
+                    "actions": [
+                        {"name": "switch_display", "arguments": {"display": "auto"}},
+                        {"name": "list_granted_applications", "arguments": {}},
+                    ]
+                },
+            },
+            mid=22,
+        )
+        result = resp["result"]
+        self.assertFalse(result.get("isError"), msg=str(result))
+        summary = json.loads(result["content"][0]["text"])["batch"]
+        self.assertEqual(summary["succeeded"], 2)
+        self.assertIsNone(summary["stopped_at"])
+        # summary block + one block per executed step
+        self.assertGreaterEqual(len(result["content"]), 3)
+
+    def test_computer_batch_stops_at_a_pending_step(self):
+        resp = self.server.request(
+            "tools/call",
+            {
+                "name": "computer_batch",
+                "arguments": {
+                    "actions": [
+                        {"name": "switch_display", "arguments": {"display": "auto"}},
+                        {"name": "left_click", "arguments": {"coordinate": [1, 1]}},
+                    ]
+                },
+            },
+            mid=23,
+        )
+        result = resp["result"]
+        self.assertTrue(result.get("isError"))
+        summary = json.loads(result["content"][0]["text"])["batch"]
+        self.assertEqual(summary["stopped_at"], 1)
+        self.assertEqual(summary["succeeded"], 1)
+        # the halting step's pending-owner error (SCRUM-1401) is surfaced
+        self.assertTrue(
+            any("SCRUM-1401" in b.get("text", "") for b in result["content"][1:])
+        )
+
+    def test_computer_batch_rejects_nested_batch(self):
+        resp = self.server.request(
+            "tools/call",
+            {
+                "name": "computer_batch",
+                "arguments": {
+                    "actions": [
+                        {"name": "computer_batch", "arguments": {"actions": []}}
+                    ]
+                },
+            },
+            mid=24,
+        )
+        result = resp["result"]
+        self.assertTrue(result.get("isError"))
+        self.assertEqual(
+            json.loads(result["content"][0]["text"])["batch"]["stopped_at"], 0
+        )
+
     def test_pending_tool_returns_owner_error(self):
         resp = self.server.request(
             "tools/call",

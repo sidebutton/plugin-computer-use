@@ -4,7 +4,7 @@
 
 Tool names are the **bare canonical** Anthropic computer-use action ids. Several collide with core SideButton MCP tools (`screenshot`, `type`, `scroll`, `wait`, `click`); namespacing on aggregation is deferred to the service engine (SCRUM-1406).
 
-**24 tools, 11 implemented** (`screenshot`, `zoom`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
+**24 tools, 14 implemented** (`screenshot`, `zoom`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`, `computer_batch`, `wait`, `cursor_position`). The rest are declared and return a pending-owner error until their sibling ticket lands.
 
 | Tool | Owner | Input | Status |
 | --- | --- | --- | --- |
@@ -29,9 +29,9 @@ Tool names are the **bare canonical** Anthropic computer-use action ids. Several
 | `list_granted_applications` | SCRUM-1404 | — | implemented |
 | `open_application` | SCRUM-1404 | `app` | implemented |
 | `switch_display` | SCRUM-1404 | `display` | implemented |
-| `computer_batch` | SCRUM-1405 | `actions` | declared |
-| `wait` | SCRUM-1405 | `duration` | declared |
-| `cursor_position` | SCRUM-1405 | — | declared |
+| `computer_batch` | SCRUM-1405 | `actions` | implemented |
+| `wait` | SCRUM-1405 | `duration` | implemented |
+| `cursor_position` | SCRUM-1405 | — | implemented |
 
 _`?` marks an optional property._
 
