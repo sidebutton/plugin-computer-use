@@ -311,15 +311,50 @@ class StdioRoundTripTest(unittest.TestCase):
         )
         self._assert_keyboard_dispatched(resp)
 
-    def test_pending_tool_returns_owner_error(self):
+    def test_click_dispatches_not_pending_owner(self):
+        # No screenshot taken yet, so the look-before-click guard (AC3) fires.
+        # That proves the click body ran rather than the pending-owner stub —
+        # and it holds with or without xdotool, since the guard precedes any
+        # xdotool call (xdotool is a declared system_dep, absent on this image).
         resp = self.server.request(
             "tools/call",
             {"name": "left_click", "arguments": {"coordinate": [10, 10]}},
+            mid=18,
+        )
+        result = resp["result"]
+        text = result["content"][0].get("text", "")
+        self.assertNotIn("declared but not implemented", text)
+        self.assertTrue(result.get("isError"))
+        self.assertIn("no screenshot session", text)
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY") and shutil.which("xdotool"),
+        "needs xdotool + a DISPLAY for a live click",
+    )
+    def test_left_click_live_after_screenshot(self):
+        # screenshot establishes the coordinate session; the click then lands.
+        self.server.request(
+            "tools/call", {"name": "screenshot", "arguments": {}}, mid=19
+        )
+        resp = self.server.request(
+            "tools/call",
+            {"name": "left_click", "arguments": {"coordinate": [10, 10]}},
+            mid=20,
+        )
+        self.assertFalse(resp["result"].get("isError"), msg=str(resp["result"]))
+        self.assertIn("left_click", resp["result"]["content"][0]["text"])
+
+    def test_pending_tool_returns_owner_error(self):
+        # mouse_move (SCRUM-1402) is still a declared-only sibling; left_click is
+        # now implemented (SCRUM-1401), so it no longer returns the owner stub.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "mouse_move", "arguments": {"coordinate": [10, 10]}},
             mid=4,
         )
         result = resp["result"]
         self.assertTrue(result["isError"])
-        self.assertIn("SCRUM-1401", result["content"][0]["text"])
+        self.assertIn("SCRUM-1402", result["content"][0]["text"])
 
     def test_unknown_tool_is_an_error(self):
         resp = self.server.request(

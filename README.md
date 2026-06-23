@@ -31,16 +31,17 @@ a **single, long-lived child process** that speaks MCP over stdio.
 ## Tool surface
 
 24 tools, grouped by the sibling ticket that owns each body. The **capture group**
-(`screenshot`, `zoom`, SCRUM-1400), the **keyboard group** (`type` / `key` /
-`hold_key`, SCRUM-1403), and the **clipboard + session group** (SCRUM-1404) are
-implemented; the rest are declared and return a clear pending-owner error until
-their ticket lands. Full input schemas:
+(`screenshot`, `zoom`, SCRUM-1400), the **click group** (`left_click` / `right_click`
+/ `middle_click` / `double_click` / `triple_click`, SCRUM-1401), the **keyboard
+group** (`type` / `key` / `hold_key`, SCRUM-1403), and the **clipboard + session
+group** (SCRUM-1404) are implemented; the rest are declared and return a clear
+pending-owner error until their ticket lands. Full input schemas:
 [`docs/computer-use-mcp-tools-schema.md`](docs/computer-use-mcp-tools-schema.md).
 
 | Group | Ticket | Tools |
 | --- | --- | --- |
 | capture | SCRUM-1400 | `screenshot` ✅, `zoom` ✅ |
-| click | SCRUM-1401 | `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click` |
+| click | SCRUM-1401 | `left_click` ✅, `right_click` ✅, `middle_click` ✅, `double_click` ✅, `triple_click` ✅ |
 | move / drag / scroll | SCRUM-1402 | `mouse_move`, `left_click_drag`, `scroll`, `left_mouse_down`, `left_mouse_up` |
 | keyboard | SCRUM-1403 | `type` ✅, `key` ✅, `hold_key` ✅ |
 | clipboard + session | SCRUM-1404 | `read_clipboard` ✅, `write_clipboard` ✅, `request_access` ✅, `list_granted_applications` ✅, `open_application` ✅, `switch_display` ✅ |
@@ -112,14 +113,17 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"type","arguments":{"text":"hello"}}}' \
   '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"key","arguments":{"text":"ctrl+a","repeat":1}}}' \
   '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"hold_key","arguments":{"text":"shift","duration":2}}}' \
+  '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"left_click","arguments":{"coordinate":[600,300],"text":"ctrl"}}}' \
   | DISPLAY=:10 python3 src/server.py
 ```
 
 `initialize` returns the handshake, `tools/list` the 24-tool surface, the
 `screenshot` call a base64 PNG image block (plus a `Saved to disk: <path>` text
 block when `save_to_disk` is set), and `zoom` a magnified PNG of the region. The
-keyboard calls each return a short text ack (`isError:false`); they need
-`xdotool` on `PATH`.
+keyboard and click calls each return a short text ack (`isError:false`); they need
+`xdotool` on `PATH`. The `left_click` maps its `[600, 300]` against the `id:3`
+screenshot's coordinate session — a click before any screenshot returns a clear
+`no screenshot session yet` error instead of clicking blind.
 
 ## Capture & coordinates
 
@@ -142,6 +146,28 @@ screenshot has been taken yet, `zoom` establishes the session lazily.
 True 1:1 (no downscale) would require pinning `:10` / the RDP window to a
 model-friendly size — that is provisioning ([SCRUM-1396](https://aictpo.atlassian.net/browse/SCRUM-1396)),
 out of scope here.
+
+### Click group (SCRUM-1401)
+
+Pointer clicks at a **screenshot-session coordinate**. The `[x, y]` `coordinate`
+is image space (relative to the last `screenshot`) and is mapped to device pixels
+via `Computer.to_device` — a click **before any screenshot** returns a clear
+`no screenshot session yet` error (look before you click). Optional `text`
+modifier(s) (`'ctrl'`, `'shift+alt'`, …) are held for the click and **always
+released** (`keyup` in a `finally`, the same guarantee as `hold_key`).
+
+| Tool | xdotool | Button |
+| --- | --- | --- |
+| `left_click` | `mousemove --sync <dx> <dy> click 1` | left (1) |
+| `right_click` | `mousemove --sync <dx> <dy> click 3` | right (3) |
+| `middle_click` | `mousemove --sync <dx> <dy> click 2` | middle (2) |
+| `double_click` | `mousemove --sync <dx> <dy> click --repeat 2 --delay 100 1` | left ×2 |
+| `triple_click` | `mousemove --sync <dx> <dy> click --repeat 3 --delay 100 1` | left ×3 |
+
+With a modifier the click is wrapped in `keydown -- <text>` → click → `keyup --
+<text>`. On-screen pixel accuracy is validated live in
+[SCRUM-1408](https://aictpo.atlassian.net/browse/SCRUM-1408) (`xdotool` is absent
+on the current runner image, so the unit tests assert the device-pixel argv).
 
 ### Keyboard group (SCRUM-1403)
 

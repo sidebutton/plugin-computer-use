@@ -4,17 +4,17 @@
 
 Tool names are the **bare canonical** Anthropic computer-use action ids. Several collide with core SideButton MCP tools (`screenshot`, `type`, `scroll`, `wait`, `click`); namespacing on aggregation is deferred to the service engine (SCRUM-1406).
 
-**24 tools, 11 implemented** (`screenshot`, `zoom`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
+**24 tools, 16 implemented** (`screenshot`, `zoom`, `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
 
 | Tool | Owner | Input | Status |
 | --- | --- | --- | --- |
 | `screenshot` | SCRUM-1400 | `save_to_disk`? | implemented |
 | `zoom` | SCRUM-1400 | `region`, `save_to_disk`? | implemented |
-| `left_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
-| `right_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
-| `middle_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
-| `double_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
-| `triple_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
+| `left_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
+| `right_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
+| `middle_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
+| `double_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
+| `triple_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
 | `mouse_move` | SCRUM-1402 | `coordinate` | declared |
 | `left_click_drag` | SCRUM-1402 | `start_coordinate`?, `coordinate` | declared |
 | `scroll` | SCRUM-1402 | `coordinate`, `scroll_direction`, `scroll_amount` | declared |

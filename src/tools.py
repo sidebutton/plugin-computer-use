@@ -327,6 +327,7 @@ TOOL_NAMES = [t["name"] for t in TOOLS]
 # Tools with a live body wired in server.py. Everything else is declared-only
 # and returns a pending-owner error until its sibling ticket lands.
 #   screenshot / zoom                                           — SCRUM-1397 / 1400 (capture group)
+#   left/right/middle/double/triple_click                       — SCRUM-1401 (click group)
 #   type / key / hold_key                                       — SCRUM-1403 (keyboard group)
 #   read/write_clipboard / request_access /                     — SCRUM-1404 (clipboard + session group)
 #   list_granted_applications / open_application / switch_display
@@ -334,6 +335,12 @@ IMPLEMENTED = {
     # capture (SCRUM-1397 / 1400)
     "screenshot",
     "zoom",
+    # click (SCRUM-1401)
+    "left_click",
+    "right_click",
+    "middle_click",
+    "double_click",
+    "triple_click",
     # keyboard (SCRUM-1403)
     "type",
     "key",
