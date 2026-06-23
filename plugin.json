@@ -329,6 +329,11 @@
         "properties": {
           "text": {
             "type": "string"
+          },
+          "repeat": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of times to press the key/chord (xdotool --repeat); defaults to 1."
           }
         },
         "required": [

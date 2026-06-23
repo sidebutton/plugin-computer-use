@@ -23,23 +23,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from computer import Computer, ComputerError, SingleOwnerLock  # noqa: E402
-from tools import TOOL_NAMES, TOOLS, owner_ticket  # noqa: E402
+from tools import IMPLEMENTED, TOOL_NAMES, TOOLS, owner_ticket  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "computer-use"
 SERVER_VERSION = "0.1.0"
-
-# Capture group (SCRUM-1400): the tools that return MCP image content blocks.
-# Each entry maps tool args -> a Computer.Capture; the rest of the surface falls
-# through to the pending-owner error until its sibling ticket lands.
-_CAPTURE_DISPATCH = {
-    "screenshot": lambda c, a: c.screenshot(
-        save_to_disk=bool(a.get("save_to_disk", False))
-    ),
-    "zoom": lambda c, a: c.zoom(
-        region=a.get("region"), save_to_disk=bool(a.get("save_to_disk", False))
-    ),
-}
 
 
 class Server:
@@ -47,6 +35,17 @@ class Server:
 
     def __init__(self, computer: Computer):
         self.computer = computer
+        # name -> handler(arguments) -> MCP result. Only tools also listed in
+        # tools.IMPLEMENTED are dispatched; every other declared tool returns a
+        # pending-owner error. Sibling tickets (SCRUM-1400..1405) register their
+        # handlers here as they land.
+        self._handlers = {
+            "screenshot": self._screenshot,   # SCRUM-1397 / 1400
+            "zoom": self._zoom,               # SCRUM-1400
+            "type": self._type,               # SCRUM-1403
+            "key": self._key,                 # SCRUM-1403
+            "hold_key": self._hold_key,       # SCRUM-1403
+        }
 
     def handle(self, msg) -> dict | None:
         """Return a JSON-RPC response dict, or ``None`` for a notification."""
@@ -87,21 +86,46 @@ class Server:
         if name not in TOOL_NAMES:
             return _tool_error(f"unknown tool: {name!r}")
 
-        handler = _CAPTURE_DISPATCH.get(name)
-        if handler is not None:
-            try:
-                cap = handler(self.computer, params.get("arguments") or {})
-            except ComputerError as exc:
-                return _tool_error(str(exc))
-            return _capture_result(cap)
+        handler = self._handlers.get(name) if name in IMPLEMENTED else None
+        if handler is None:
+            # Declared in the surface but its body is owned by a sibling ticket.
+            return _tool_error(
+                f"tool {name!r} is declared but not implemented yet; its body is "
+                f"owned by {owner_ticket(name)}. The dispatch base (computer.py: "
+                f"run_xdotool / scale_coordinates / screenshot / to_device) is "
+                f"ready for that work."
+            )
 
-        # Declared in the surface but owned by a sibling ticket.
-        return _tool_error(
-            f"tool {name!r} is declared but not yet implemented; its body is "
-            f"owned by {owner_ticket(name)}. The dispatch base (computer.py: "
-            f"run_xdotool / scale_coordinates / screenshot / to_device) is ready "
-            f"for that work."
+        try:
+            return handler(params.get("arguments") or {})
+        except ComputerError as exc:
+            return _tool_error(str(exc))
+
+    # --- tool handlers ---------------------------------------------------
+    # Capture group (SCRUM-1400): screenshot/zoom return MCP image content
+    # blocks (plus a saved-path text block when save_to_disk is honoured).
+    def _screenshot(self, args: dict) -> dict:
+        cap = self.computer.screenshot(
+            save_to_disk=bool(args.get("save_to_disk", False))
         )
+        return _capture_result(cap)
+
+    def _zoom(self, args: dict) -> dict:
+        cap = self.computer.zoom(
+            region=args.get("region"),
+            save_to_disk=bool(args.get("save_to_disk", False)),
+        )
+        return _capture_result(cap)
+
+    # Keyboard group (SCRUM-1403): plain text acknowledgements.
+    def _type(self, args: dict) -> dict:
+        return _tool_ok(self.computer.type_text(args["text"]))
+
+    def _key(self, args: dict) -> dict:
+        return _tool_ok(self.computer.press_key(args["text"], args.get("repeat", 1)))
+
+    def _hold_key(self, args: dict) -> dict:
+        return _tool_ok(self.computer.hold_key(args["text"], args["duration"]))
 
 
 def _error(mid, code: int, message: str) -> dict:
@@ -119,6 +143,10 @@ def _capture_result(cap) -> dict:
     if cap.path:
         content.append({"type": "text", "text": f"Saved to disk: {cap.path}"})
     return {"content": content, "isError": False}
+
+
+def _tool_ok(text: str) -> dict:
+    return {"content": [{"type": "text", "text": text}], "isError": False}
 
 
 def main() -> int:

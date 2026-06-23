@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -76,6 +77,69 @@ class XdotoolBuildTest(unittest.TestCase):
                 os.environ["DISPLAY"] = prev
 
 
+class KeyboardActionTest(unittest.TestCase):
+    """type/key/hold_key build the right xdotool argv, and hold_key runs
+    keydown -> sleep -> keyup, always releasing. No xdotool/desktop needed:
+    ``run_xdotool`` is replaced with a recorder."""
+
+    def setUp(self):
+        self.c = Computer(display=":10")
+        self.calls = []
+
+        def record(args, **_kw):
+            self.calls.append(list(args))
+            return ""
+
+        self.c.run_xdotool = record
+
+    def test_type_uses_delayed_type_with_separator(self):
+        ack = self.c.type_text("hi -x")
+        self.assertEqual(self.calls, [["type", "--delay", "12", "--", "hi -x"]])
+        self.assertIn("5", ack)  # len("hi -x") == 5
+
+    def test_key_defaults_repeat_to_one(self):
+        self.c.press_key("ctrl+s")
+        self.assertEqual(self.calls, [["key", "--repeat", 1, "--", "ctrl+s"]])
+
+    def test_key_honours_repeat(self):
+        self.c.press_key("Down", repeat=5)
+        self.assertEqual(self.calls, [["key", "--repeat", 5, "--", "Down"]])
+
+    def test_hold_key_runs_keydown_sleep_keyup_in_order(self):
+        # hold_key only shells out for keydown/keyup; interleave the patched
+        # sleep into the same list to assert ordering.
+        with mock.patch("time.sleep", lambda d: self.calls.append(("sleep", d))):
+            ack = self.c.hold_key("shift", 1.5)
+        self.assertEqual(
+            self.calls,
+            [["keydown", "--", "shift"], ("sleep", 1.5), ["keyup", "--", "shift"]],
+        )
+        self.assertIn("shift", ack)
+
+    def test_hold_key_releases_even_if_wait_is_interrupted(self):
+        def interrupt(_d):
+            raise KeyboardInterrupt
+
+        with mock.patch("time.sleep", interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.c.hold_key("ctrl", 99)
+        # keyup still ran via the finally -> no stranded modifier.
+        self.assertEqual(self.calls, [["keydown", "--", "ctrl"], ["keyup", "--", "ctrl"]])
+
+    def test_hold_key_skips_release_when_keydown_fails(self):
+        # Nothing was pressed, so no keyup (and no wait) should be issued.
+        def fail_keydown(args, **_kw):
+            self.calls.append(list(args))
+            raise ComputerError("keydown failed")
+
+        self.c.run_xdotool = fail_keydown
+        with mock.patch("time.sleep") as slept:
+            with self.assertRaises(ComputerError):
+                self.c.hold_key("ctrl", 1)
+        slept.assert_not_called()
+        self.assertEqual(self.calls, [["keydown", "--", "ctrl"]])
+
+
 class SingleOwnerLockTest(unittest.TestCase):
     def test_second_owner_is_rejected(self):
         path = os.path.join(tempfile.gettempdir(), f"cu-lock-{os.getpid()}.lock")
@@ -131,9 +195,23 @@ class ToolSurfaceTest(unittest.TestCase):
         for name in TOOL_NAMES:
             self.assertIn(name, OWNER)
 
-    def test_capture_group_is_implemented(self):
-        # SCRUM-1397 wired screenshot; SCRUM-1400 adds zoom (capture group done).
-        self.assertEqual(IMPLEMENTED, {"screenshot", "zoom"})
+    def test_implemented_is_capture_plus_keyboard_group(self):
+        # SCRUM-1397 wired screenshot; SCRUM-1400 adds the capture group (zoom);
+        # SCRUM-1403 adds the keyboard group.
+        self.assertEqual(
+            IMPLEMENTED, {"screenshot", "zoom", "type", "key", "hold_key"}
+        )
+
+    def test_key_has_optional_repeat(self):
+        # AC4: key gains an additive `repeat` input; the surface stays 24 tools.
+        key = next(t for t in TOOLS if t["name"] == "key")
+        schema = key["inputSchema"]
+        repeat = schema["properties"].get("repeat")
+        self.assertIsNotNone(repeat)
+        self.assertEqual(repeat["type"], "integer")
+        self.assertEqual(repeat["minimum"], 1)
+        self.assertNotIn("repeat", schema.get("required", []))  # stays optional
+        self.assertEqual(len(TOOL_NAMES), 24)
 
 
 class CaptureSessionTest(unittest.TestCase):
