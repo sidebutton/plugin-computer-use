@@ -23,6 +23,14 @@ _COORDINATE = {
     "description": "[x, y] in the model coordinate space (scaled to the screen).",
 }
 
+# Shared with screenshot + zoom (the canonical contract puts it on both).
+_SAVE_TO_DISK = {
+    "type": "boolean",
+    "description": "Save the image to disk and return the saved path in the tool "
+    "result, so it can be attached to a message for the user. Only set this when "
+    "you intend to share the image.",
+}
+
 
 def _obj(properties: dict, required=None) -> dict:
     schema = {"type": "object", "properties": properties}
@@ -37,13 +45,17 @@ _CAPTURE = [
     {
         "name": "screenshot",
         "description": "Capture the active display (DISPLAY=:10) and return a "
-        "base64-encoded PNG. Implemented in SCRUM-1397 as the proof action.",
-        "inputSchema": _obj({}),
+        "base64-encoded PNG image block. The returned image is the coordinate "
+        "space that subsequent click/move calls refer to. Set save_to_disk to "
+        "also write the PNG and return its path.",
+        "inputSchema": _obj({"save_to_disk": _SAVE_TO_DISK}),
     },
     {
         "name": "zoom",
-        "description": "Capture and return a magnified PNG of a sub-region of "
-        "the screen.",
+        "description": "Take a higher-resolution screenshot of a region of the "
+        "last full-screen screenshot — use it to inspect small text, button "
+        "labels, or fine UI detail. Coordinates in later click calls still refer "
+        "to the full-screen screenshot, never the zoomed image. Read-only.",
         "inputSchema": _obj(
             {
                 "region": {
@@ -51,8 +63,11 @@ _CAPTURE = [
                     "items": {"type": "integer"},
                     "minItems": 4,
                     "maxItems": 4,
-                    "description": "[x, y, width, height] region to magnify.",
-                }
+                    "description": "(x0, y0, x1, y1): rectangle to zoom into, in "
+                    "the coordinate space of the most recent full-screen "
+                    "screenshot. x0,y0 = top-left, x1,y1 = bottom-right.",
+                },
+                "save_to_disk": _SAVE_TO_DISK,
             },
             required=["region"],
         ),
@@ -263,9 +278,11 @@ OWNER = {
 TOOLS = [*_CAPTURE, *_CLICK, *_MOVE, *_KEYBOARD, *_CLIPBOARD, *_UTILITY]
 TOOL_NAMES = [t["name"] for t in TOOLS]
 
-# Implemented in this ticket (SCRUM-1397). Everything else is declared-only and
-# returns a pending-owner error until its sibling ticket lands.
-IMPLEMENTED = {"screenshot"}
+# Implemented so far. SCRUM-1397 wired ``screenshot`` as the proof action;
+# SCRUM-1400 completes the capture group (``screenshot`` save_to_disk + ``zoom``).
+# Everything else is declared-only and returns a pending-owner error until its
+# sibling ticket lands.
+IMPLEMENTED = {"screenshot", "zoom"}
 
 
 def owner_ticket(name: str) -> str:

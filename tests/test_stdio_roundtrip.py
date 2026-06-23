@@ -10,6 +10,7 @@ Covers the SCRUM-1397 acceptance criteria:
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,9 @@ class StdioServer:
             tempfile.gettempdir(), f"cu-test-lock-{os.getpid()}.lock"
         )
         env["CU_SCREENSHOT_DELAY"] = "0"
+        # Saved captures land in an isolated dir we remove in close().
+        self.save_dir = tempfile.mkdtemp(prefix=f"cu-test-save-{os.getpid()}-")
+        env["CU_SAVE_DIR"] = self.save_dir
         self.proc = subprocess.Popen(
             [sys.executable, str(SERVER)],
             stdin=subprocess.PIPE,
@@ -80,6 +84,7 @@ class StdioServer:
                         stream.close()
                 except Exception:
                     pass
+            shutil.rmtree(self.save_dir, ignore_errors=True)
 
 
 class StdioRoundTripTest(unittest.TestCase):
@@ -127,6 +132,49 @@ class StdioRoundTripTest(unittest.TestCase):
         # Parse the IHDR chunk to confirm a real raster of non-zero size. (A byte
         # threshold would be flaky: a blank headless Xvfb root compresses to a
         # tiny PNG, while the live :10 desktop is hundreds of KB.)
+        width = int.from_bytes(raw[16:20], "big")
+        height = int.from_bytes(raw[20:24], "big")
+        self.assertGreater(width, 0)
+        self.assertGreater(height, 0)
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY"), "no DISPLAY (run via ./run_tests.sh / xvfb-run)"
+    )
+    def test_ac1_screenshot_save_to_disk_returns_a_path_block(self):
+        resp = self.server.request(
+            "tools/call",
+            {"name": "screenshot", "arguments": {"save_to_disk": True}},
+            mid=7,
+        )
+        result = resp["result"]
+        self.assertFalse(result.get("isError"), msg=str(result))
+        blocks = result["content"]
+        self.assertEqual(blocks[0]["type"], "image")
+        self.assertEqual(blocks[0]["mimeType"], "image/png")
+        # A text block beside the image carries the saved path; the file exists.
+        texts = [b["text"] for b in blocks if b["type"] == "text"]
+        self.assertTrue(texts, msg=str(blocks))
+        path = texts[0].split("Saved to disk:", 1)[1].strip()
+        self.assertTrue(os.path.isfile(path), path)
+        self.assertTrue(path.startswith(self.server.save_dir), path)
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY"), "no DISPLAY (run via ./run_tests.sh / xvfb-run)"
+    )
+    def test_ac2_zoom_round_trips_a_png_and_establishes_session(self):
+        # Called on a fresh server with no prior screenshot -> lazy session.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "zoom", "arguments": {"region": [100, 100, 400, 300]}},
+            mid=8,
+        )
+        result = resp["result"]
+        self.assertFalse(result.get("isError"), msg=str(result))
+        block = result["content"][0]
+        self.assertEqual(block["type"], "image")
+        self.assertEqual(block["mimeType"], "image/png")
+        raw = base64.b64decode(block["data"])
+        self.assertTrue(raw.startswith(PNG_MAGIC), "payload is not a PNG")
         width = int.from_bytes(raw[16:20], "big")
         height = int.from_bytes(raw[20:24], "big")
         self.assertGreater(width, 0)

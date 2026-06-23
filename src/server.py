@@ -23,11 +23,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from computer import Computer, ComputerError, SingleOwnerLock  # noqa: E402
-from tools import IMPLEMENTED, TOOL_NAMES, TOOLS, owner_ticket  # noqa: E402
+from tools import TOOL_NAMES, TOOLS, owner_ticket  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "computer-use"
 SERVER_VERSION = "0.1.0"
+
+# Capture group (SCRUM-1400): the tools that return MCP image content blocks.
+# Each entry maps tool args -> a Computer.Capture; the rest of the surface falls
+# through to the pending-owner error until its sibling ticket lands.
+_CAPTURE_DISPATCH = {
+    "screenshot": lambda c, a: c.screenshot(
+        save_to_disk=bool(a.get("save_to_disk", False))
+    ),
+    "zoom": lambda c, a: c.zoom(
+        region=a.get("region"), save_to_disk=bool(a.get("save_to_disk", False))
+    ),
+}
 
 
 class Server:
@@ -75,24 +87,20 @@ class Server:
         if name not in TOOL_NAMES:
             return _tool_error(f"unknown tool: {name!r}")
 
-        if name == "screenshot" and name in IMPLEMENTED:
+        handler = _CAPTURE_DISPATCH.get(name)
+        if handler is not None:
             try:
-                b64 = self.computer.screenshot()
+                cap = handler(self.computer, params.get("arguments") or {})
             except ComputerError as exc:
                 return _tool_error(str(exc))
-            return {
-                "content": [
-                    {"type": "image", "data": b64, "mimeType": "image/png"}
-                ],
-                "isError": False,
-            }
+            return _capture_result(cap)
 
-        # Declared in the surface but not yet implemented in SCRUM-1397.
+        # Declared in the surface but owned by a sibling ticket.
         return _tool_error(
-            f"tool {name!r} is declared but not implemented in SCRUM-1397; its "
-            f"body is owned by {owner_ticket(name)}. The dispatch base "
-            f"(computer.py: run_xdotool / scale_coordinates / screenshot) is "
-            f"ready for that work."
+            f"tool {name!r} is declared but not yet implemented; its body is "
+            f"owned by {owner_ticket(name)}. The dispatch base (computer.py: "
+            f"run_xdotool / scale_coordinates / screenshot / to_device) is ready "
+            f"for that work."
         )
 
 
@@ -102,6 +110,15 @@ def _error(mid, code: int, message: str) -> dict:
 
 def _tool_error(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
+def _capture_result(cap) -> dict:
+    """An MCP result for a capture: an image block, plus a text block carrying the
+    saved path when ``save_to_disk`` was honoured."""
+    content = [{"type": "image", "data": cap.data_b64, "mimeType": "image/png"}]
+    if cap.path:
+        content.append({"type": "text", "text": f"Saved to disk: {cap.path}"})
+    return {"content": content, "isError": False}
 
 
 def main() -> int:

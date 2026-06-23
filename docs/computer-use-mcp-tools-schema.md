@@ -8,8 +8,8 @@ Tool names are the **bare canonical** Anthropic computer-use action ids. Several
 
 | Tool | Owner | Input | Status |
 | --- | --- | --- | --- |
-| `screenshot` | SCRUM-1400 | — | implemented |
-| `zoom` | SCRUM-1400 | `region` | declared |
+| `screenshot` | SCRUM-1400 | `save_to_disk`? | implemented |
+| `zoom` | SCRUM-1400 | `region`, `save_to_disk`? | implemented |
 | `left_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
 | `right_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
 | `middle_click` | SCRUM-1401 | `coordinate`, `text`? | declared |
@@ -39,18 +39,23 @@ _`?` marks an optional property._
 
 ### `screenshot`
 
-Capture the active display (DISPLAY=:10) and return a base64-encoded PNG. Implemented in SCRUM-1397 as the proof action.
+Capture the active display (DISPLAY=:10) and return a base64-encoded PNG image block. The returned image is the coordinate space that subsequent click/move calls refer to. Set save_to_disk to also write the PNG and return its path.
 
 ```json
 {
   "type": "object",
-  "properties": {}
+  "properties": {
+    "save_to_disk": {
+      "type": "boolean",
+      "description": "Save the image to disk and return the saved path in the tool result, so it can be attached to a message for the user. Only set this when you intend to share the image."
+    }
+  }
 }
 ```
 
 ### `zoom`
 
-Capture and return a magnified PNG of a sub-region of the screen.
+Take a higher-resolution screenshot of a region of the last full-screen screenshot — use it to inspect small text, button labels, or fine UI detail. Coordinates in later click calls still refer to the full-screen screenshot, never the zoomed image. Read-only.
 
 ```json
 {
@@ -63,7 +68,11 @@ Capture and return a magnified PNG of a sub-region of the screen.
       },
       "minItems": 4,
       "maxItems": 4,
-      "description": "[x, y, width, height] region to magnify."
+      "description": "(x0, y0, x1, y1): rectangle to zoom into, in the coordinate space of the most recent full-screen screenshot. x0,y0 = top-left, x1,y1 = bottom-right."
+    },
+    "save_to_disk": {
+      "type": "boolean",
+      "description": "Save the image to disk and return the saved path in the tool result, so it can be attached to a message for the user. Only set this when you intend to share the image."
     }
   },
   "required": [
