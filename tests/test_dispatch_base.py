@@ -1,6 +1,7 @@
 """Unit tests for the computer.py dispatch base (no desktop required)."""
 
 import base64
+import json
 import os
 import shutil
 import sys
@@ -290,10 +291,10 @@ class ToolSurfaceTest(unittest.TestCase):
         for name in TOOL_NAMES:
             self.assertIn(name, OWNER)
 
-    def test_implemented_is_capture_click_keyboard_and_clipboard_session(self):
-        # capture group (SCRUM-1397 screenshot + SCRUM-1400 zoom) + click group
-        # (SCRUM-1401) + keyboard group (SCRUM-1403) + clipboard/session group
-        # (SCRUM-1404).
+    def test_implemented_is_capture_click_keyboard_clipboard_and_utility(self):
+        # capture (SCRUM-1397 screenshot + SCRUM-1400 zoom) + click (SCRUM-1401)
+        # + keyboard (SCRUM-1403) + clipboard/session (SCRUM-1404) + utility
+        # (SCRUM-1405).
         self.assertEqual(
             IMPLEMENTED,
             {
@@ -313,6 +314,9 @@ class ToolSurfaceTest(unittest.TestCase):
                 "list_granted_applications",
                 "open_application",
                 "switch_display",
+                "computer_batch",
+                "wait",
+                "cursor_position",
             },
         )
 
@@ -489,6 +493,180 @@ class ZoomRegionTest(unittest.TestCase):
             Computer._validate_region([-10, -10, 5000, 5000], 1366, 768),
             (0, 0, 1366, 768),
         )
+
+
+class WaitTest(unittest.TestCase):
+    """SCRUM-1405 — wait sleeps in-process, with input guards. No desktop: the
+    sleep is patched so the test never actually blocks."""
+
+    def setUp(self):
+        self.c = Computer(display=":10")
+
+    def test_sleeps_in_process_with_no_xdotool(self):
+        with mock.patch("time.sleep") as slept:
+            ack = self.c.wait(0.25)
+        slept.assert_called_once_with(0.25)
+        self.assertIn("0.25", ack)
+
+    def test_zero_is_allowed(self):
+        with mock.patch("time.sleep") as slept:
+            self.c.wait(0)
+        slept.assert_called_once_with(0.0)
+
+    def test_negative_is_rejected_without_sleeping(self):
+        with mock.patch("time.sleep") as slept:
+            with self.assertRaises(ComputerError):
+                self.c.wait(-1)
+        slept.assert_not_called()
+
+    def test_non_numeric_is_rejected(self):
+        for bad in ("soon", None, [1]):
+            with self.assertRaises(ComputerError):
+                self.c.wait(bad)
+
+    def test_nan_and_inf_are_rejected(self):
+        for bad in (float("nan"), float("inf")):
+            with self.assertRaises(ComputerError):
+                self.c.wait(bad)
+
+    def test_over_cap_is_rejected_without_sleeping(self):
+        from computer import WAIT_MAX_SECONDS
+
+        with mock.patch("time.sleep") as slept:
+            with self.assertRaises(ComputerError):
+                self.c.wait(WAIT_MAX_SECONDS + 1)
+        slept.assert_not_called()
+
+
+class CursorPositionTest(unittest.TestCase):
+    """SCRUM-1405 — cursor_position parses getmouselocation --shell and scales the
+    real pointer DOWN into model space. run_xdotool is stubbed (no desktop)."""
+
+    def setUp(self):
+        self.c = Computer(display=":10", width=1920, height=1080)
+
+    def test_uses_getmouselocation_shell(self):
+        seen = {}
+
+        def rec(args, **_kw):
+            seen["args"] = list(args)
+            return "X=0\nY=0\nSCREEN=0\nWINDOW=1\n"
+
+        self.c.run_xdotool = rec
+        self.c.cursor_position()
+        self.assertEqual(seen["args"], ["getmouselocation", "--shell"])
+
+    def test_screen_corner_scales_to_model_corner(self):
+        self.c.run_xdotool = lambda *a, **k: "X=1920\nY=1080\nSCREEN=0\nWINDOW=9\n"
+        self.assertEqual(self.c.cursor_position(), [1366, 768])
+
+    def test_centre_scales_down(self):
+        self.c.run_xdotool = lambda *a, **k: "X=960\nY=540\nSCREEN=0\nWINDOW=9\n"
+        self.assertEqual(self.c.cursor_position(), [683, 384])
+
+    def test_unparseable_output_raises(self):
+        self.c.run_xdotool = lambda *a, **k: "no coords here\n"
+        with self.assertRaises(ComputerError):
+            self.c.cursor_position()
+
+
+class ComputerBatchTest(unittest.TestCase):
+    """SCRUM-1405 — computer_batch fan-out, driven through the real
+    ``Server._dispatch`` (same gating as a top-level call) with run_xdotool
+    stubbed so keyboard steps run without a desktop."""
+
+    def setUp(self):
+        from server import Server
+
+        self.c = Computer(display=":10")
+        self.calls = []
+
+        def record(args, **_kw):
+            self.calls.append(list(args))
+            return ""
+
+        self.c.run_xdotool = record
+        self.srv = Server(self.c)
+
+    def _batch(self, actions):
+        return self.srv._dispatch("computer_batch", {"actions": actions})
+
+    def _summary(self, res):
+        return json.loads(res["content"][0]["text"])["batch"]
+
+    def test_runs_steps_in_order_and_combines_results(self):
+        res = self._batch(
+            [
+                {"name": "type", "arguments": {"text": "hi"}},
+                {"name": "key", "arguments": {"text": "Return"}},
+            ]
+        )
+        self.assertFalse(res["isError"])
+        s = self._summary(res)
+        self.assertEqual(
+            (s["total"], s["succeeded"], s["failed"], s["skipped"]), (2, 2, 0, 0)
+        )
+        self.assertIsNone(s["stopped_at"])
+        # the underlying xdotool ran in batch order
+        self.assertEqual(
+            self.calls,
+            [
+                ["type", "--delay", "12", "--", "hi"],
+                ["key", "--repeat", 1, "--", "Return"],
+            ],
+        )
+        # each step's text block is tagged with its index/name
+        tags = [b["text"] for b in res["content"][1:]]
+        self.assertTrue(any(t.startswith("[step 0 · type]") for t in tags))
+        self.assertTrue(any(t.startswith("[step 1 · key]") for t in tags))
+
+    def test_stops_at_first_error_and_skips_the_rest(self):
+        res = self._batch(
+            [
+                {"name": "type", "arguments": {"text": "hi"}},
+                {"name": "mouse_move", "arguments": {"coordinate": [1, 2]}},  # pending
+                {"name": "key", "arguments": {"text": "Return"}},  # never runs
+            ]
+        )
+        self.assertTrue(res["isError"])
+        s = self._summary(res)
+        self.assertEqual(s["stopped_at"], 1)
+        self.assertEqual((s["succeeded"], s["failed"], s["skipped"]), (1, 1, 1))
+        # only the first step shelled out; the post-halt key never ran
+        self.assertEqual(self.calls, [["type", "--delay", "12", "--", "hi"]])
+        # the failing step's pending-owner error is carried through (tagged);
+        # mouse_move is still a declared-only sibling (SCRUM-1402)
+        self.assertTrue(
+            any("SCRUM-1402" in b.get("text", "") for b in res["content"][1:])
+        )
+
+    def test_rejects_nested_computer_batch_without_recursing(self):
+        res = self._batch([{"name": "computer_batch", "arguments": {"actions": []}}])
+        self.assertTrue(res["isError"])
+        self.assertEqual(self._summary(res)["stopped_at"], 0)
+        self.assertIn("nested", res["content"][1]["text"].lower())
+        self.assertEqual(self.calls, [])  # never dispatched / recursed
+
+    def test_rejects_empty_actions(self):
+        res = self._batch([])
+        self.assertTrue(res["isError"])
+        self.assertIn("non-empty", res["content"][0]["text"])
+
+    def test_rejects_non_list_actions(self):
+        res = self.srv._dispatch("computer_batch", {"actions": "type"})
+        self.assertTrue(res["isError"])
+
+    def test_unknown_action_halts_at_its_index(self):
+        res = self._batch(
+            [{"name": "type", "arguments": {"text": "x"}}, {"name": "nope"}]
+        )
+        self.assertTrue(res["isError"])
+        self.assertEqual(self._summary(res)["stopped_at"], 1)
+
+    def test_malformed_step_without_a_name_halts(self):
+        res = self._batch([{"arguments": {}}])
+        self.assertTrue(res["isError"])
+        self.assertEqual(self._summary(res)["stopped_at"], 0)
 
 
 @unittest.skipUnless(

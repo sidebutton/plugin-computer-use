@@ -61,6 +61,10 @@ class Server:
             "list_granted_applications": self._list_granted_applications,
             "open_application": self._open_application,
             "switch_display": self._switch_display,
+            # utility / batch (SCRUM-1405)
+            "wait": self._wait,
+            "cursor_position": self._cursor_position,
+            "computer_batch": self._computer_batch,
         }
 
     def handle(self, msg) -> dict | None:
@@ -98,7 +102,18 @@ class Server:
         return None if is_notification else {"jsonrpc": "2.0", "id": mid, "result": result}
 
     def _call_tool(self, params: dict) -> dict:
-        name = params.get("name")
+        return self._dispatch(params.get("name"), params.get("arguments") or {})
+
+    def _dispatch(self, name, arguments: dict) -> dict:
+        """Run one tool by name and return its MCP result dict.
+
+        The single point of name validation + IMPLEMENTED/pending-owner gating, so
+        ``computer_batch`` can re-dispatch each of its steps through exactly the
+        same path as a top-level ``tools/call`` — no second code path. A handler's
+        ``ComputerError`` becomes an ``isError`` result; any other exception
+        propagates (``handle`` maps it to a JSON-RPC error; ``computer_batch``
+        guards its own steps so one bad step can't crash the whole batch).
+        """
         if name not in TOOL_NAMES:
             return _tool_error(f"unknown tool: {name!r}")
 
@@ -112,9 +127,8 @@ class Server:
                 f"ready for that work."
             )
 
-        args = params.get("arguments") or {}
         try:
-            return handler(args)
+            return handler(arguments or {})
         except ComputerError as exc:
             return _tool_error(str(exc))
 
@@ -198,6 +212,83 @@ class Server:
 
     def _switch_display(self, args: dict) -> dict:
         return _tool_json(self.computer.switch_display(args.get("display")))
+
+    # Utility group (SCRUM-1405): wait/cursor_position plus computer_batch, an
+    # in-server fan-out that re-dispatches each step through self._dispatch.
+    def _wait(self, args: dict) -> dict:
+        return _tool_text(self.computer.wait(args.get("duration")))
+
+    def _cursor_position(self, args: dict) -> dict:
+        return _tool_json(self.computer.cursor_position())
+
+    def _computer_batch(self, args: dict) -> dict:
+        """Run an ordered ``[{name, arguments}, …]`` sequence in one call.
+
+        Re-dispatches each step through :meth:`_dispatch` (same validation +
+        pending-owner gating as a top-level call), **stop-on-first-error**: the
+        first step whose result is ``isError`` halts the batch and its index is
+        reported as ``stopped_at``; the remaining steps are skipped. Returns one
+        combined result — a JSON ``{"batch": …}`` summary block followed by each
+        executed step's content blocks (text tagged with its step index, images
+        passed through) — with ``isError`` set iff the batch halted early.
+
+        A nested ``computer_batch`` step is rejected (no recursion), as is an
+        empty ``actions`` sequence. The batch is deliberately NOT transactional:
+        a halt leaves the already-applied steps' effects in place (the summary's
+        ``stopped_at`` makes that fully observable), matching the browser_batch
+        contract (the-assistant docs/plans/PLAN-actions-batching.md).
+        """
+        actions = args.get("actions")
+        if not isinstance(actions, list) or not actions:
+            raise ComputerError("computer_batch requires a non-empty 'actions' array")
+
+        blocks: list[dict] = []
+        steps: list[dict] = []
+        stopped_at: int | None = None
+        succeeded = 0
+        for i, action in enumerate(actions):
+            name = action.get("name") if isinstance(action, dict) else None
+            if not isinstance(name, str) or not name:
+                res = _tool_error(f"action {i} must be an object with a string 'name'")
+            elif name == "computer_batch":
+                res = _tool_error(
+                    f"action {i}: computer_batch cannot be nested inside a batch"
+                )
+            else:
+                try:
+                    res = self._dispatch(name, action.get("arguments") or {})
+                except Exception as exc:  # noqa: BLE001 — one bad step never crashes the batch
+                    res = _tool_error(f"action {i} ({name}) raised: {exc}")
+            failed = bool(res.get("isError"))
+            steps.append({"index": i, "name": name, "ok": not failed})
+            for block in res.get("content", []):
+                blocks.append(_tag_block(i, name, block))
+            if failed:
+                stopped_at = i
+                break
+            succeeded += 1
+
+        failed_count = 1 if stopped_at is not None else 0
+        summary = {
+            "total": len(actions),
+            "succeeded": succeeded,
+            "failed": failed_count,
+            "skipped": len(actions) - succeeded - failed_count,
+            "stopped_at": stopped_at,
+            "steps": steps,
+        }
+        return {
+            "content": [{"type": "text", "text": json.dumps({"batch": summary})}, *blocks],
+            "isError": stopped_at is not None,
+        }
+
+
+def _tag_block(index: int, name, block: dict) -> dict:
+    """Prefix a batch step's text block with its step index/name so concatenated
+    per-step output stays attributable; non-text (e.g. image) blocks pass through."""
+    if block.get("type") == "text":
+        return {**block, "text": f"[step {index} · {name}] {block.get('text', '')}"}
+    return block
 
 
 def _error(mid, code: int, message: str) -> dict:

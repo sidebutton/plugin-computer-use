@@ -331,6 +331,7 @@ TOOL_NAMES = [t["name"] for t in TOOLS]
 #   type / key / hold_key                                       — SCRUM-1403 (keyboard group)
 #   read/write_clipboard / request_access /                     — SCRUM-1404 (clipboard + session group)
 #   list_granted_applications / open_application / switch_display
+#   computer_batch / wait / cursor_position                     — SCRUM-1405 (utility group)
 IMPLEMENTED = {
     # capture (SCRUM-1397 / 1400)
     "screenshot",
@@ -352,6 +353,10 @@ IMPLEMENTED = {
     "list_granted_applications",
     "open_application",
     "switch_display",
+    # utility / batch (SCRUM-1405)
+    "computer_batch",
+    "wait",
+    "cursor_position",
 }
 
 

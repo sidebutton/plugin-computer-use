@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import math
 import os
 import shutil
 import subprocess
@@ -61,6 +62,15 @@ DEFAULT_DISPLAY = ":10"
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 DEFAULT_SCREENSHOT_DELAY = 2.0
+
+# Upper bound for a single `wait`. The wait sleeps in THIS persistent process, so
+# it is bounded only by the service engine's per-call timeout — which SIGKILLs the
+# child (plugin.json pins wait.timeoutMs=120000), and that kill drops the whole
+# session's cross-call state (held mouse button, screenshot->coordinate session).
+# So cap a single wait safely under that budget and tell the model to split a
+# longer pause into several waits, rather than let one runaway wait take the
+# session down. Coupled to plugin.json `service.tools.wait.timeoutMs`.
+WAIT_MAX_SECONDS = 115.0
 
 LOCK_PATH = os.environ.get(
     "CU_LOCK_PATH",
@@ -696,3 +706,53 @@ class Computer:
             self.run_xdotool(argv)
         ack = f"{self._click_verb(button, count)} at ({dx}, {dy})"
         return ack + (f" holding {text}" if text else "")
+
+    # --- utility (SCRUM-1405) --------------------------------------------
+    def wait(self, duration) -> str:
+        """Sleep ``duration`` seconds in this (persistent) process.
+
+        The sleep lives here — not inside an ``xdotool`` subprocess — so a long
+        wait is bounded only by the service per-call timeout, mirroring
+        :meth:`hold_key`. Rejects a non-numeric / negative / non-finite duration,
+        and caps at :data:`WAIT_MAX_SECONDS` (see that constant) so a runaway wait
+        can't be SIGKILLed by the engine and drop the session's cross-call state.
+        """
+        try:
+            secs = float(duration)
+        except (TypeError, ValueError):
+            raise ComputerError(f"wait duration must be a number, got {duration!r}")
+        if not math.isfinite(secs):
+            raise ComputerError(f"wait duration must be finite, got {duration!r}")
+        if secs < 0:
+            raise ComputerError(f"wait duration must be >= 0, got {secs}")
+        if secs > WAIT_MAX_SECONDS:
+            raise ComputerError(
+                f"wait duration {secs}s exceeds the {WAIT_MAX_SECONDS}s per-call "
+                f"budget (the service engine would kill the session at its per-call "
+                f"timeout); split a longer pause into multiple waits"
+            )
+        time.sleep(secs)
+        return f"waited {secs}s"
+
+    def cursor_position(self) -> list[int]:
+        """Return the current pointer ``[x, y]`` in model-coordinate space.
+
+        Reads the real screen pointer via ``xdotool getmouselocation --shell``
+        (``X=…``/``Y=…`` lines) and scales it DOWN through the same
+        :meth:`scale_coordinates` basis a click is scaled UP through, so the
+        reported coordinate is one the model can pass straight back to a click.
+        """
+        out = self.run_xdotool(["getmouselocation", "--shell"])
+        coords: dict[str, str] = {}
+        for line in out.splitlines():
+            key, sep, val = line.partition("=")
+            if sep:
+                coords[key.strip()] = val.strip()
+        try:
+            x, y = int(coords["X"]), int(coords["Y"])
+        except (KeyError, ValueError):
+            raise ComputerError(
+                f"could not parse xdotool getmouselocation output: {out!r}"
+            )
+        sx, sy = self.scale_coordinates(ScalingSource.COMPUTER, x, y)
+        return [sx, sy]
