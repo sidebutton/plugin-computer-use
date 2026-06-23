@@ -1,0 +1,481 @@
+{
+  "name": "computer-use",
+  "version": "0.1.0",
+  "description": "Persistent stdio MCP server exposing the Anthropic computer-use action surface (screenshot, click, move, keyboard, clipboard, batch) against the agent desktop on DISPLAY=:10. Scaffold + dispatch base (SCRUM-1397); the individual tool bodies land in SCRUM-1400..1405 and engine hosting in SCRUM-1406.",
+  "runtime": "service",
+  "service": {
+    "protocol": "mcp-stdio",
+    "command": [
+      "python3",
+      "src/server.py"
+    ],
+    "toolDiscovery": "tools/list",
+    "singleOwner": true,
+    "display": ":10",
+    "systemDeps": [
+      "xdotool",
+      "scrot | gnome-screenshot | imagemagick",
+      "xclip",
+      "wmctrl"
+    ]
+  },
+  "tools": [
+    {
+      "name": "screenshot",
+      "description": "Capture the active display (DISPLAY=:10) and return a base64-encoded PNG. Implemented in SCRUM-1397 as the proof action.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "zoom",
+      "description": "Capture and return a magnified PNG of a sub-region of the screen.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "region": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "[x, y, width, height] region to magnify."
+          }
+        },
+        "required": [
+          "region"
+        ]
+      }
+    },
+    {
+      "name": "left_click",
+      "description": "Left-click at a coordinate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          },
+          "text": {
+            "type": "string",
+            "description": "Optional modifier key(s) to hold during the click, e.g. 'ctrl' or 'shift+alt'."
+          }
+        },
+        "required": [
+          "coordinate"
+        ]
+      }
+    },
+    {
+      "name": "right_click",
+      "description": "Right-click at a coordinate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          },
+          "text": {
+            "type": "string",
+            "description": "Optional modifier key(s) to hold during the click, e.g. 'ctrl' or 'shift+alt'."
+          }
+        },
+        "required": [
+          "coordinate"
+        ]
+      }
+    },
+    {
+      "name": "middle_click",
+      "description": "Middle-click at a coordinate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          },
+          "text": {
+            "type": "string",
+            "description": "Optional modifier key(s) to hold during the click, e.g. 'ctrl' or 'shift+alt'."
+          }
+        },
+        "required": [
+          "coordinate"
+        ]
+      }
+    },
+    {
+      "name": "double_click",
+      "description": "Double left-click at a coordinate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          },
+          "text": {
+            "type": "string",
+            "description": "Optional modifier key(s) to hold during the click, e.g. 'ctrl' or 'shift+alt'."
+          }
+        },
+        "required": [
+          "coordinate"
+        ]
+      }
+    },
+    {
+      "name": "triple_click",
+      "description": "Triple left-click at a coordinate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          },
+          "text": {
+            "type": "string",
+            "description": "Optional modifier key(s) to hold during the click, e.g. 'ctrl' or 'shift+alt'."
+          }
+        },
+        "required": [
+          "coordinate"
+        ]
+      }
+    },
+    {
+      "name": "mouse_move",
+      "description": "Move the pointer to a coordinate without clicking.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          }
+        },
+        "required": [
+          "coordinate"
+        ]
+      }
+    },
+    {
+      "name": "left_click_drag",
+      "description": "Press the left button at start_coordinate (or the current position) and drag to coordinate before releasing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "start_coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          },
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          }
+        },
+        "required": [
+          "coordinate"
+        ]
+      }
+    },
+    {
+      "name": "scroll",
+      "description": "Scroll in a direction by an amount at a coordinate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          },
+          "scroll_direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ]
+          },
+          "scroll_amount": {
+            "type": "integer",
+            "description": "Number of scroll 'clicks'."
+          }
+        },
+        "required": [
+          "coordinate",
+          "scroll_direction",
+          "scroll_amount"
+        ]
+      }
+    },
+    {
+      "name": "left_mouse_down",
+      "description": "Press and hold the left mouse button (released later by left_mouse_up). Requires the persistent session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          }
+        }
+      }
+    },
+    {
+      "name": "left_mouse_up",
+      "description": "Release a left mouse button held by left_mouse_down.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "coordinate": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[x, y] in the model coordinate space (scaled to the screen)."
+          }
+        }
+      }
+    },
+    {
+      "name": "type",
+      "description": "Type a string of text at the current focus.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "key",
+      "description": "Press a key or chord using xdotool key syntax, e.g. 'Return', 'ctrl+s', 'alt+Tab'.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "hold_key",
+      "description": "Hold a key (or chord) down for a duration in seconds.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "number",
+            "description": "Seconds to hold (may be up to ~100s)."
+          }
+        },
+        "required": [
+          "text",
+          "duration"
+        ]
+      }
+    },
+    {
+      "name": "read_clipboard",
+      "description": "Read the X clipboard contents (via xclip).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "write_clipboard",
+      "description": "Write text to the X clipboard (via xclip).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "request_access",
+      "description": "Request a session grant for one or more applications (Linux stub: auto-grants and returns screenshotFiltering=false; the real grant model lands with the service engine).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applications": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Applications to request access to."
+          }
+        }
+      }
+    },
+    {
+      "name": "list_granted_applications",
+      "description": "Return the set of applications currently granted desktop access (Linux stub: echoes the granted set).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "open_application",
+      "description": "Launch or focus a desktop application by name.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "switch_display",
+      "description": "Switch the display the session targets, e.g. ':10'.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "display": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "display"
+        ]
+      }
+    },
+    {
+      "name": "computer_batch",
+      "description": "Run a sequence of computer-use actions in order and return one combined result.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "arguments": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            },
+            "description": "Ordered list of {name, arguments} actions."
+          }
+        },
+        "required": [
+          "actions"
+        ]
+      }
+    },
+    {
+      "name": "wait",
+      "description": "Wait for a duration in seconds (then optionally screenshot).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "duration": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "duration"
+        ]
+      }
+    },
+    {
+      "name": "cursor_position",
+      "description": "Return the current cursor [x, y] in model coordinates.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sidebutton-plugin-computer-use"
+version = "0.1.0"
+description = "Persistent stdio MCP server for the SideButton computer-use plugin (scaffold + dispatch base)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+# Intentionally dependency-free: the SideButton plugin install drops
+# node_modules / non-vendored deps and runs no install step, so the server must
+# run on the stdlib alone (python3 on the runner). The dispatch base shells out
+# to system tools (xdotool, a screenshot backend, xclip) declared as system_deps.
+dependencies = []
+
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
