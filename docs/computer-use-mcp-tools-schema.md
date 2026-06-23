@@ -4,7 +4,7 @@
 
 Tool names are the **bare canonical** Anthropic computer-use action ids. Several collide with core SideButton MCP tools (`screenshot`, `type`, `scroll`, `wait`, `click`); namespacing on aggregation is deferred to the service engine (SCRUM-1406).
 
-**24 tools, 16 implemented** (`screenshot`, `zoom`, `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
+**24 tools, 21 implemented** (`screenshot`, `zoom`, `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click`, `mouse_move`, `left_click_drag`, `scroll`, `left_mouse_down`, `left_mouse_up`, `type`, `key`, `hold_key`, `read_clipboard`, `write_clipboard`, `request_access`, `list_granted_applications`, `open_application`, `switch_display`). The rest are declared and return a pending-owner error until their sibling ticket lands.
 
 | Tool | Owner | Input | Status |
 | --- | --- | --- | --- |
@@ -15,11 +15,11 @@ Tool names are the **bare canonical** Anthropic computer-use action ids. Several
 | `middle_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
 | `double_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
 | `triple_click` | SCRUM-1401 | `coordinate`, `text`? | implemented |
-| `mouse_move` | SCRUM-1402 | `coordinate` | declared |
-| `left_click_drag` | SCRUM-1402 | `start_coordinate`?, `coordinate` | declared |
-| `scroll` | SCRUM-1402 | `coordinate`, `scroll_direction`, `scroll_amount` | declared |
-| `left_mouse_down` | SCRUM-1402 | `coordinate`? | declared |
-| `left_mouse_up` | SCRUM-1402 | `coordinate`? | declared |
+| `mouse_move` | SCRUM-1402 | `coordinate` | implemented |
+| `left_click_drag` | SCRUM-1402 | `start_coordinate`?, `coordinate` | implemented |
+| `scroll` | SCRUM-1402 | `coordinate`, `scroll_direction`, `scroll_amount`, `text`? | implemented |
+| `left_mouse_down` | SCRUM-1402 | `coordinate`? | implemented |
+| `left_mouse_up` | SCRUM-1402 | `coordinate`? | implemented |
 | `type` | SCRUM-1403 | `text` | implemented |
 | `key` | SCRUM-1403 | `text`, `repeat`? | implemented |
 | `hold_key` | SCRUM-1403 | `text`, `duration` | implemented |
@@ -311,6 +311,10 @@ Scroll in a direction by an amount at a coordinate.
     "scroll_amount": {
       "type": "integer",
       "description": "Number of scroll 'clicks'."
+    },
+    "text": {
+      "type": "string",
+      "description": "Optional modifier key(s) to hold during the scroll, e.g. 'ctrl' or 'shift'."
     }
   },
   "required": [

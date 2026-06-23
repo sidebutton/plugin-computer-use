@@ -130,6 +130,11 @@ _MOVE = [
                     "type": "integer",
                     "description": "Number of scroll 'clicks'.",
                 },
+                "text": {
+                    "type": "string",
+                    "description": "Optional modifier key(s) to hold during the "
+                    "scroll, e.g. 'ctrl' or 'shift'.",
+                },
             },
             required=["coordinate", "scroll_direction", "scroll_amount"],
         ),
@@ -328,6 +333,8 @@ TOOL_NAMES = [t["name"] for t in TOOLS]
 # and returns a pending-owner error until its sibling ticket lands.
 #   screenshot / zoom                                           — SCRUM-1397 / 1400 (capture group)
 #   left/right/middle/double/triple_click                       — SCRUM-1401 (click group)
+#   mouse_move / left_click_drag / scroll /                     — SCRUM-1402 (move / drag / scroll group)
+#   left_mouse_down / left_mouse_up
 #   type / key / hold_key                                       — SCRUM-1403 (keyboard group)
 #   read/write_clipboard / request_access /                     — SCRUM-1404 (clipboard + session group)
 #   list_granted_applications / open_application / switch_display
@@ -341,6 +348,12 @@ IMPLEMENTED = {
     "middle_click",
     "double_click",
     "triple_click",
+    # move / drag / scroll (SCRUM-1402)
+    "mouse_move",
+    "left_click_drag",
+    "scroll",
+    "left_mouse_down",
+    "left_mouse_up",
     # keyboard (SCRUM-1403)
     "type",
     "key",

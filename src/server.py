@@ -17,6 +17,9 @@ dispatch base.
 from __future__ import annotations
 
 import json
+import os
+import select
+import signal
 import sys
 from pathlib import Path
 
@@ -28,6 +31,13 @@ from tools import IMPLEMENTED, TOOL_NAMES, TOOLS, owner_ticket  # noqa: E402
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "computer-use"
 SERVER_VERSION = "0.1.0"
+
+# Idle auto-release threshold (SCRUM-1402 / Q3): if no JSON-RPC request arrives
+# within this many seconds, drop any held left button + session grants so a turn
+# that ended before left_mouse_up never strands a pressed button. Conservative by
+# default (a legitimate multi-segment drag pauses for seconds, not minutes); set
+# CU_IDLE_RELEASE_SECS=0 to disable (block forever waiting for the next request).
+DEFAULT_IDLE_RELEASE_SECS = 300.0
 
 
 class Server:
@@ -50,6 +60,12 @@ class Server:
             "middle_click": self._middle_click,
             "double_click": self._double_click,
             "triple_click": self._triple_click,
+            # move / drag / scroll (SCRUM-1402)
+            "mouse_move": self._mouse_move,
+            "left_click_drag": self._left_click_drag,
+            "scroll": self._scroll,
+            "left_mouse_down": self._left_mouse_down,
+            "left_mouse_up": self._left_mouse_up,
             # keyboard (SCRUM-1403)
             "type": self._type,
             "key": self._key,
@@ -161,6 +177,35 @@ class Server:
     def _triple_click(self, args: dict) -> dict:
         return self._click(args, "left", 3)
 
+    # Move / drag / scroll group (SCRUM-1402): pointer motion, press-drag-release,
+    # scroll wheel, and the stateful left_mouse_down/up pair held across calls.
+    def _mouse_move(self, args: dict) -> dict:
+        return _tool_text(self.computer.mouse_move(args.get("coordinate")))
+
+    def _left_click_drag(self, args: dict) -> dict:
+        return _tool_text(
+            self.computer.left_click_drag(
+                coordinate=args.get("coordinate"),
+                start_coordinate=args.get("start_coordinate"),
+            )
+        )
+
+    def _scroll(self, args: dict) -> dict:
+        return _tool_text(
+            self.computer.scroll(
+                coordinate=args.get("coordinate"),
+                scroll_direction=args.get("scroll_direction"),
+                scroll_amount=args.get("scroll_amount"),
+                text=args.get("text"),
+            )
+        )
+
+    def _left_mouse_down(self, args: dict) -> dict:
+        return _tool_text(self.computer.left_mouse_down(args.get("coordinate")))
+
+    def _left_mouse_up(self, args: dict) -> dict:
+        return _tool_text(self.computer.left_mouse_up(args.get("coordinate")))
+
     # Keyboard group (SCRUM-1403): plain text acknowledgements.
     def _type(self, args: dict) -> dict:
         return _tool_text(self.computer.type_text(args["text"]))
@@ -241,10 +286,47 @@ def main() -> int:
         sys.stderr.write(f"computer-use: {exc}\n")
         return 1
 
+    # Clear a left button a CRASHED predecessor may have stranded down before we
+    # took the lock (our own held flag is False on a fresh process). Best-effort.
+    computer.clear_stranded_button()
+
     server = Server(computer)
     out = sys.stdout
+
+    # A held button + grants must be dropped if the host STOPS us with a signal:
+    # Python's `finally` does NOT run on SIGTERM, so release explicitly here too.
+    # reset_held_state is idempotent, so the finally below re-running it is safe.
+    def _on_signal(_signum, _frame):
+        computer.reset_held_state()
+        raise SystemExit(0)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _on_signal)
+        except (ValueError, OSError):
+            pass  # not the main thread (e.g. embedded) — skip handler install
+
+    idle_secs = float(
+        os.environ.get("CU_IDLE_RELEASE_SECS", DEFAULT_IDLE_RELEASE_SECS)
+    )
+    stdin = sys.stdin
     try:
-        for line in sys.stdin:
+        while True:
+            # Idle auto-release (Q3): if no request arrives within idle_secs, drop
+            # a held button + grants, then keep waiting. The protocol is strictly
+            # request->response (the peer waits for our reply), so at most one line
+            # is ever in flight — select on the fd never misses a buffered request.
+            if idle_secs > 0:
+                try:
+                    ready, _, _ = select.select([stdin], [], [], idle_secs)
+                except (OSError, ValueError):
+                    ready = [stdin]  # stdin not selectable — fall back to a read
+                if not ready:
+                    computer.reset_held_state()
+                    continue
+            line = stdin.readline()
+            if line == "":
+                break  # EOF: peer closed stdin (disconnect)
             line = line.strip()
             if not line:
                 continue
@@ -259,6 +341,9 @@ def main() -> int:
                 out.write(json.dumps(response) + "\n")
                 out.flush()
     finally:
+        # Disconnect/stop: release a held button + grants before dropping the lock
+        # (we must still own the session to release the button).
+        computer.reset_held_state()
         lock.release()
     return 0
 

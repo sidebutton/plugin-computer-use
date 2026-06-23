@@ -344,17 +344,117 @@ class StdioRoundTripTest(unittest.TestCase):
         self.assertFalse(resp["result"].get("isError"), msg=str(resp["result"]))
         self.assertIn("left_click", resp["result"]["content"][0]["text"])
 
-    def test_pending_tool_returns_owner_error(self):
-        # mouse_move (SCRUM-1402) is still a declared-only sibling; left_click is
-        # now implemented (SCRUM-1401), so it no longer returns the owner stub.
+    def _assert_pointer_dispatched(self, resp):
+        """The call reached the move/drag/scroll handler, not the pending-owner
+        stub. The body either succeeds, or hits a real dispatch-base guard — the
+        look-before-you-point session guard, or the missing xdotool (a declared
+        system_dep, absent on this runner image). Any of those proves the tool is
+        wired, so this holds with or without xdotool."""
+        result = resp["result"]
+        text = result["content"][0].get("text", "")
+        self.assertNotIn("declared but not implemented", text)
+        if result.get("isError"):
+            self.assertTrue(
+                "no screenshot session" in text
+                or "xdotool is not installed" in text,
+                msg=text,
+            )
+
+    def test_mouse_move_dispatches_not_pending_owner(self):
+        # No screenshot yet -> the look-before-you-point guard fires, proving the
+        # move body ran rather than the pending-owner stub (xdotool-independent).
         resp = self.server.request(
             "tools/call",
             {"name": "mouse_move", "arguments": {"coordinate": [10, 10]}},
+            mid=21,
+        )
+        self._assert_pointer_dispatched(resp)
+        self.assertTrue(resp["result"].get("isError"))
+        self.assertIn("no screenshot session", resp["result"]["content"][0]["text"])
+
+    def test_scroll_dispatches_not_pending_owner(self):
+        resp = self.server.request(
+            "tools/call",
+            {
+                "name": "scroll",
+                "arguments": {
+                    "coordinate": [10, 10],
+                    "scroll_direction": "down",
+                    "scroll_amount": 3,
+                },
+            },
+            mid=22,
+        )
+        self._assert_pointer_dispatched(resp)
+
+    def test_left_click_drag_dispatches_not_pending_owner(self):
+        resp = self.server.request(
+            "tools/call",
+            {"name": "left_click_drag", "arguments": {"coordinate": [10, 10]}},
+            mid=23,
+        )
+        self._assert_pointer_dispatched(resp)
+
+    def test_left_mouse_down_dispatches_not_pending_owner(self):
+        # No coordinate -> skips the session mapping and goes straight to the
+        # press; with xdotool absent that surfaces the missing-binary error (a
+        # real dispatch), never the owner stub.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_down", "arguments": {}},
+            mid=24,
+        )
+        self._assert_pointer_dispatched(resp)
+
+    def test_left_mouse_up_without_a_hold_is_a_noop(self):
+        # Safe-when-not-held: returns a non-error no-op without touching xdotool,
+        # so this passes on a runner image with no xdotool.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_up", "arguments": {}},
+            mid=25,
+        )
+        result = resp["result"]
+        self.assertFalse(result.get("isError"), msg=str(result))
+        self.assertIn("not held", result["content"][0]["text"])
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY") and shutil.which("xdotool"),
+        "needs xdotool + a DISPLAY for a live held-button cycle",
+    )
+    def test_left_mouse_down_then_up_cycle_live(self):
+        # screenshot establishes the session; down holds button 1, a second down
+        # is rejected ("already held"), up releases it.
+        self.server.request("tools/call", {"name": "screenshot", "arguments": {}}, mid=26)
+        down = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_down", "arguments": {"coordinate": [10, 10]}},
+            mid=27,
+        )
+        self.assertFalse(down["result"].get("isError"), msg=str(down["result"]))
+        again = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_down", "arguments": {"coordinate": [10, 10]}},
+            mid=28,
+        )
+        self.assertTrue(again["result"]["isError"])
+        self.assertIn("already held", again["result"]["content"][0]["text"])
+        up = self.server.request(
+            "tools/call", {"name": "left_mouse_up", "arguments": {}}, mid=29
+        )
+        self.assertFalse(up["result"].get("isError"), msg=str(up["result"]))
+
+    def test_pending_tool_returns_owner_error(self):
+        # computer_batch (SCRUM-1405) is still a declared-only sibling; the move
+        # group (SCRUM-1402) is now implemented, so it no longer returns the stub.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "computer_batch", "arguments": {"actions": []}},
             mid=4,
         )
         result = resp["result"]
         self.assertTrue(result["isError"])
-        self.assertIn("SCRUM-1402", result["content"][0]["text"])
+        self.assertIn("SCRUM-1405", result["content"][0]["text"])
 
     def test_unknown_tool_is_an_error(self):
         resp = self.server.request(
