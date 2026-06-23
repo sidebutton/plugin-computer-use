@@ -10,10 +10,12 @@ Covers the SCRUM-1397 acceptance criteria:
 import base64
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -28,7 +30,7 @@ from tools import TOOL_NAMES  # noqa: E402
 class StdioServer:
     """Spawn server.py and exchange newline-delimited JSON-RPC messages."""
 
-    def __init__(self):
+    def __init__(self, extra_env=None):
         env = dict(os.environ)
         # Isolate the single-owner lock so the test never collides with a real
         # session, and skip the post-action settle delay.
@@ -39,6 +41,10 @@ class StdioServer:
         # Saved captures land in an isolated dir we remove in close().
         self.save_dir = tempfile.mkdtemp(prefix=f"cu-test-save-{os.getpid()}-")
         env["CU_SAVE_DIR"] = self.save_dir
+        # Per-instance overrides (e.g. a distinct lock path for a second server,
+        # or a short CU_IDLE_RELEASE_SECS) applied last so they win.
+        if extra_env:
+            env.update(extra_env)
         self.proc = subprocess.Popen(
             [sys.executable, str(SERVER)],
             stdin=subprocess.PIPE,
@@ -362,7 +368,12 @@ class StdioRoundTripTest(unittest.TestCase):
         # summary block + one block per executed step
         self.assertGreaterEqual(len(result["content"]), 3)
 
-    def test_computer_batch_stops_at_a_pending_step(self):
+    def test_computer_batch_stops_at_a_failing_step(self):
+        # Stop-on-first-error: step 0 (switch_display) succeeds, step 1
+        # (read_clipboard with no prior grant) fails deterministically, and the
+        # step after it is skipped. A failing step — not a pending one — halts the
+        # batch (every tool is implemented now); read_clipboard's grant guard fires
+        # before any xclip/desktop call, so this is xdotool-independent.
         resp = self.server.request(
             "tools/call",
             {
@@ -370,7 +381,8 @@ class StdioRoundTripTest(unittest.TestCase):
                 "arguments": {
                     "actions": [
                         {"name": "switch_display", "arguments": {"display": "auto"}},
-                        {"name": "mouse_move", "arguments": {"coordinate": [1, 1]}},
+                        {"name": "read_clipboard", "arguments": {}},
+                        {"name": "switch_display", "arguments": {"display": "auto"}},
                     ]
                 },
             },
@@ -381,10 +393,13 @@ class StdioRoundTripTest(unittest.TestCase):
         summary = json.loads(result["content"][0]["text"])["batch"]
         self.assertEqual(summary["stopped_at"], 1)
         self.assertEqual(summary["succeeded"], 1)
-        # the halting step's pending-owner error (SCRUM-1402, mouse_move still a
-        # declared-only sibling) is surfaced
+        self.assertEqual(summary["skipped"], 1)  # the step after the failure
+        # the halting step's error is surfaced, tagged with its index + name.
         self.assertTrue(
-            any("SCRUM-1402" in b.get("text", "") for b in result["content"][1:])
+            any(
+                "step 1" in b.get("text", "") and "read_clipboard" in b.get("text", "")
+                for b in result["content"][1:]
+            )
         )
 
     def test_computer_batch_rejects_nested_batch(self):
@@ -439,17 +454,168 @@ class StdioRoundTripTest(unittest.TestCase):
         self.assertFalse(resp["result"].get("isError"), msg=str(resp["result"]))
         self.assertIn("left_click", resp["result"]["content"][0]["text"])
 
-    def test_pending_tool_returns_owner_error(self):
-        # mouse_move (SCRUM-1402) is still a declared-only sibling; left_click is
-        # now implemented (SCRUM-1401), so it no longer returns the owner stub.
+    def _assert_pointer_dispatched(self, resp):
+        """The call reached the move/drag/scroll handler, not the pending-owner
+        stub. The body either succeeds, or hits a real dispatch-base guard — the
+        look-before-you-point session guard, or the missing xdotool (a declared
+        system_dep, absent on this runner image). Any of those proves the tool is
+        wired, so this holds with or without xdotool."""
+        result = resp["result"]
+        text = result["content"][0].get("text", "")
+        self.assertNotIn("declared but not implemented", text)
+        if result.get("isError"):
+            self.assertTrue(
+                "no screenshot session" in text
+                or "xdotool is not installed" in text,
+                msg=text,
+            )
+
+    def test_mouse_move_dispatches_not_pending_owner(self):
+        # No screenshot yet -> the look-before-you-point guard fires, proving the
+        # move body ran rather than the pending-owner stub (xdotool-independent).
         resp = self.server.request(
             "tools/call",
             {"name": "mouse_move", "arguments": {"coordinate": [10, 10]}},
-            mid=4,
+            mid=21,
+        )
+        self._assert_pointer_dispatched(resp)
+        self.assertTrue(resp["result"].get("isError"))
+        self.assertIn("no screenshot session", resp["result"]["content"][0]["text"])
+
+    def test_scroll_dispatches_not_pending_owner(self):
+        resp = self.server.request(
+            "tools/call",
+            {
+                "name": "scroll",
+                "arguments": {
+                    "coordinate": [10, 10],
+                    "scroll_direction": "down",
+                    "scroll_amount": 3,
+                },
+            },
+            mid=22,
+        )
+        self._assert_pointer_dispatched(resp)
+
+    def test_left_click_drag_dispatches_not_pending_owner(self):
+        resp = self.server.request(
+            "tools/call",
+            {"name": "left_click_drag", "arguments": {"coordinate": [10, 10]}},
+            mid=23,
+        )
+        self._assert_pointer_dispatched(resp)
+
+    def test_left_mouse_down_dispatches_not_pending_owner(self):
+        # No coordinate -> skips the session mapping and goes straight to the
+        # press; with xdotool absent that surfaces the missing-binary error (a
+        # real dispatch), never the owner stub.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_down", "arguments": {}},
+            mid=24,
+        )
+        self._assert_pointer_dispatched(resp)
+
+    def test_left_mouse_up_without_a_hold_is_a_noop(self):
+        # Safe-when-not-held: returns a non-error no-op without touching xdotool,
+        # so this passes on a runner image with no xdotool.
+        resp = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_up", "arguments": {}},
+            mid=25,
         )
         result = resp["result"]
-        self.assertTrue(result["isError"])
-        self.assertIn("SCRUM-1402", result["content"][0]["text"])
+        self.assertFalse(result.get("isError"), msg=str(result))
+        self.assertIn("not held", result["content"][0]["text"])
+
+    def test_request_bundled_after_a_notification_is_not_stranded(self):
+        # Regression (SCRUM-1402): a fire-and-forget notification and the request
+        # right after it can land in the pipe in a single write. The idle loop
+        # must read every line through readline() (which drains the stream buffer
+        # in order) rather than select() on the raw fd — a select() never sees a
+        # request already pulled into that buffer, so the first tools/call bundled
+        # behind `notifications/initialized` would strand until the idle tick.
+        # Sent as ONE write so both lines are buffered together; the default idle
+        # (300s) is far past the 10s guard, so a regression fails fast (no hang).
+        proc = self.server.proc
+        bundled = (
+            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            + "\n"
+            + json.dumps({"jsonrpc": "2.0", "id": 88, "method": "tools/list"})
+            + "\n"
+        )
+        proc.stdin.write(bundled)
+        proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], 10)
+        self.assertTrue(
+            ready,
+            "a request bundled behind a notification was stranded in the stream "
+            "buffer (no response within 10s)",
+        )
+        resp = json.loads(proc.stdout.readline())
+        self.assertEqual(resp["id"], 88)
+        self.assertEqual([t["name"] for t in resp["result"]["tools"]], TOOL_NAMES)
+
+    def test_idle_auto_release_clears_session_grants(self):
+        # AC4 (Q3): after CU_IDLE_RELEASE_SECS of no request, the watchdog drops a
+        # held button + session grants so a turn that ended before left_mouse_up
+        # never strands state. The grant clear is observable WITHOUT xdotool
+        # (request_access is in-memory), so it proves the idle reset truly fires.
+        # A distinct lock path lets this run alongside setUp's default server.
+        srv = StdioServer(
+            extra_env={
+                "CU_IDLE_RELEASE_SECS": "0.5",
+                "CU_LOCK_PATH": os.path.join(
+                    tempfile.gettempdir(), f"cu-test-idle-lock-{os.getpid()}.lock"
+                ),
+            }
+        )
+        self.addCleanup(srv.close)
+        srv.request("initialize", mid=1)
+        srv.request(
+            "tools/call",
+            {"name": "request_access", "arguments": {"apps": ["Slack"], "reason": "qa"}},
+            mid=2,
+        )
+        before = srv.request(
+            "tools/call",
+            {"name": "list_granted_applications", "arguments": {}},
+            mid=3,
+        )["result"]["content"][0]["text"]
+        self.assertIn("Slack", before)
+        time.sleep(1.5)  # >> 0.5s idle -> the watchdog must fire reset_held_state
+        after = srv.request(
+            "tools/call",
+            {"name": "list_granted_applications", "arguments": {}},
+            mid=4,
+        )["result"]["content"][0]["text"]
+        self.assertNotIn("Slack", after)  # grants cleared on idle
+
+    @unittest.skipUnless(
+        os.environ.get("DISPLAY") and shutil.which("xdotool"),
+        "needs xdotool + a DISPLAY for a live held-button cycle",
+    )
+    def test_left_mouse_down_then_up_cycle_live(self):
+        # screenshot establishes the session; down holds button 1, a second down
+        # is rejected ("already held"), up releases it.
+        self.server.request("tools/call", {"name": "screenshot", "arguments": {}}, mid=26)
+        down = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_down", "arguments": {"coordinate": [10, 10]}},
+            mid=27,
+        )
+        self.assertFalse(down["result"].get("isError"), msg=str(down["result"]))
+        again = self.server.request(
+            "tools/call",
+            {"name": "left_mouse_down", "arguments": {"coordinate": [10, 10]}},
+            mid=28,
+        )
+        self.assertTrue(again["result"]["isError"])
+        self.assertIn("already held", again["result"]["content"][0]["text"])
+        up = self.server.request(
+            "tools/call", {"name": "left_mouse_up", "arguments": {}}, mid=29
+        )
+        self.assertFalse(up["result"].get("isError"), msg=str(up["result"]))
 
     def test_unknown_tool_is_an_error(self):
         resp = self.server.request(

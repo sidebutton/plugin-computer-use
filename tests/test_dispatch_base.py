@@ -236,6 +236,194 @@ class ClickActionTest(unittest.TestCase):
             self.c.click([1, 2], button="back")
 
 
+class PointerActionTest(unittest.TestCase):
+    """move/drag/scroll + the stateful left_mouse_down/up pair build the right
+    xdotool argv, map coordinates through the screenshot session, hold optional
+    scroll modifiers (always releasing), and track the held button across calls.
+    No xdotool/desktop needed: ``run_xdotool`` is a recorder and the session is
+    set directly (an identity session carries the input coordinate verbatim)."""
+
+    def setUp(self):
+        self.c = Computer(display=":10")
+        self.c.last_capture = CaptureSession(1366, 768, 1366, 768)
+        self.calls = []
+
+        def record(args, **_kw):
+            self.calls.append(list(args))
+            return ""
+
+        self.c.run_xdotool = record
+
+    def test_mouse_move_builds_a_synced_mousemove(self):
+        ack = self.c.mouse_move([100, 200])
+        self.assertEqual(self.calls, [["mousemove", "--sync", 100, 200]])
+        self.assertIn("(100, 200)", ack)
+
+    def test_drag_with_start_moves_then_presses_drags_releases(self):
+        ack = self.c.left_click_drag([300, 400], start_coordinate=[10, 20])
+        self.assertEqual(
+            self.calls,
+            [[
+                "mousemove", "--sync", 10, 20,
+                "mousedown", 1,
+                "mousemove", "--sync", 300, 400,
+                "mouseup", 1,
+            ]],
+        )
+        self.assertIn("from (10, 20) to (300, 400)", ack)
+
+    def test_drag_without_start_drags_from_current_position(self):
+        ack = self.c.left_click_drag([300, 400])
+        self.assertEqual(
+            self.calls,
+            [["mousedown", 1, "mousemove", "--sync", 300, 400, "mouseup", 1]],
+        )
+        self.assertIn("from the current position", ack)
+
+    def test_scroll_maps_direction_to_x11_wheel_button(self):
+        for direction, button in (("up", 4), ("down", 5), ("left", 6), ("right", 7)):
+            self.calls.clear()
+            self.c.scroll([5, 6], direction, 3)
+            self.assertEqual(
+                self.calls,
+                [["mousemove", "--sync", 5, 6, "click", "--repeat", 3, button]],
+            )
+
+    def test_scroll_holds_modifier_with_keydown_then_scroll_then_keyup(self):
+        ack = self.c.scroll([5, 6], "down", 2, text="ctrl")
+        self.assertEqual(
+            self.calls,
+            [
+                ["keydown", "--", "ctrl"],
+                ["mousemove", "--sync", 5, 6, "click", "--repeat", 2, 5],
+                ["keyup", "--", "ctrl"],
+            ],
+        )
+        self.assertIn("holding ctrl", ack)
+
+    def test_scroll_releases_modifier_even_if_the_scroll_raises(self):
+        def fail_on_scroll(args, **_kw):
+            self.calls.append(list(args))
+            if args and args[0] == "mousemove":
+                raise ComputerError("scroll failed")
+            return ""
+
+        self.c.run_xdotool = fail_on_scroll
+        with self.assertRaises(ComputerError):
+            self.c.scroll([5, 6], "up", 1, text="shift")
+        self.assertEqual(
+            self.calls,
+            [
+                ["keydown", "--", "shift"],
+                ["mousemove", "--sync", 5, 6, "click", "--repeat", 1, 4],
+                ["keyup", "--", "shift"],
+            ],
+        )
+
+    def test_scroll_rejects_bad_direction_and_amount(self):
+        with self.assertRaises(ComputerError):
+            self.c.scroll([5, 6], "sideways", 1)
+        for bad in (0, -2, "x", None):
+            with self.assertRaises(ComputerError):
+                self.c.scroll([5, 6], "up", bad)
+
+    def test_left_mouse_down_presses_button_1_and_marks_held(self):
+        ack = self.c.left_mouse_down([7, 8])
+        self.assertEqual(
+            self.calls, [["mousemove", "--sync", 7, 8, "mousedown", 1]]
+        )
+        self.assertTrue(self.c._left_button_down)
+        self.assertIn("(7, 8)", ack)
+
+    def test_left_mouse_down_without_coordinate_presses_in_place(self):
+        self.c.left_mouse_down()
+        self.assertEqual(self.calls, [["mousedown", 1]])
+        self.assertTrue(self.c._left_button_down)
+
+    def test_left_mouse_down_twice_raises_already_held(self):
+        self.c.left_mouse_down([1, 2])
+        with self.assertRaises(ComputerError) as ctx:
+            self.c.left_mouse_down([3, 4])
+        self.assertIn("already held", str(ctx.exception))
+        # the rejected second press dispatched nothing extra.
+        self.assertEqual(self.calls, [["mousemove", "--sync", 1, 2, "mousedown", 1]])
+
+    def test_left_mouse_up_releases_and_clears_held(self):
+        self.c.left_mouse_down([1, 2])
+        self.calls.clear()
+        ack = self.c.left_mouse_up([9, 10])
+        self.assertEqual(self.calls, [["mousemove", "--sync", 9, 10, "mouseup", 1]])
+        self.assertFalse(self.c._left_button_down)
+        self.assertIn("(9, 10)", ack)
+
+    def test_left_mouse_up_when_not_held_is_a_noop(self):
+        ack = self.c.left_mouse_up([9, 10])
+        self.assertEqual(self.calls, [])  # nothing dispatched
+        self.assertIn("not held", ack)
+        self.assertFalse(self.c._left_button_down)
+
+    def test_held_flag_is_not_set_when_the_press_fails(self):
+        def boom(_args, **_kw):
+            raise ComputerError("xdotool is not installed")
+
+        self.c.run_xdotool = boom
+        with self.assertRaises(ComputerError):
+            self.c.left_mouse_down([1, 2])
+        self.assertFalse(self.c._left_button_down)  # never stranded True
+
+    def test_coordinates_are_mapped_through_the_session(self):
+        # A 1366x768 image on a 1920x1080 device -> centre maps to (960, 540).
+        self.c.last_capture = CaptureSession(1920, 1080, 1366, 768)
+        self.c.mouse_move([683, 384])
+        self.assertEqual(self.calls[0], ["mousemove", "--sync", 960, 540])
+
+    def test_move_without_a_session_raises_and_dispatches_nothing(self):
+        self.c.last_capture = None
+        for call in (
+            lambda: self.c.mouse_move([10, 10]),
+            lambda: self.c.left_click_drag([10, 10]),
+            lambda: self.c.scroll([10, 10], "up", 1),
+            lambda: self.c.left_mouse_down([10, 10]),
+        ):
+            with self.assertRaises(ComputerError):
+                call()
+        self.assertEqual(self.calls, [])  # look-before-you-point guard fires first
+
+    def test_bad_coordinate_raises(self):
+        for bad in ([1], [1, 2, 3], "nope", [None, 2]):
+            with self.assertRaises(ComputerError):
+                self.c.mouse_move(bad)
+
+    def test_reset_held_state_releases_button_and_clears_grants(self):
+        self.c.left_mouse_down([1, 2])
+        self.c.request_access(apps=["Slack"], reason="x", clipboardRead=True)
+        self.calls.clear()
+        self.c.reset_held_state()
+        self.assertEqual(self.calls, [["mouseup", "1"]])  # button released
+        self.assertFalse(self.c._left_button_down)
+        self.assertEqual(self.c._allowlist, set())        # grants cleared
+        self.assertFalse(self.c._clipboard_read)
+
+    def test_reset_held_state_is_a_safe_noop_when_nothing_held(self):
+        self.c.reset_held_state()        # no button, no grants
+        self.assertEqual(self.calls, [])
+        # and it must never raise even if the release dispatch fails.
+        self.c._left_button_down = True
+
+        def boom(_args, **_kw):
+            raise ComputerError("xdotool is not installed")
+
+        self.c.run_xdotool = boom
+        self.c.reset_held_state()        # swallows the error
+        self.assertFalse(self.c._left_button_down)
+
+    def test_clear_stranded_button_issues_a_best_effort_mouseup(self):
+        # Our flag is False (fresh process) but a crashed predecessor may have
+        # left button 1 down — clear it unconditionally.
+        self.c.clear_stranded_button()
+        self.assertEqual(self.calls, [["mouseup", "1"]])
+
+
 class SingleOwnerLockTest(unittest.TestCase):
     def test_second_owner_is_rejected(self):
         path = os.path.join(tempfile.gettempdir(), f"cu-lock-{os.getpid()}.lock")
@@ -291,10 +479,12 @@ class ToolSurfaceTest(unittest.TestCase):
         for name in TOOL_NAMES:
             self.assertIn(name, OWNER)
 
-    def test_implemented_is_capture_click_keyboard_clipboard_and_utility(self):
-        # capture (SCRUM-1397 screenshot + SCRUM-1400 zoom) + click (SCRUM-1401)
-        # + keyboard (SCRUM-1403) + clipboard/session (SCRUM-1404) + utility
-        # (SCRUM-1405).
+    def test_implemented_is_the_full_tool_surface(self):
+        # With the move group (SCRUM-1402) merged alongside the utility group
+        # (SCRUM-1405), every declared tool is now implemented: capture
+        # (SCRUM-1397 screenshot + SCRUM-1400 zoom) + click (SCRUM-1401) +
+        # move/drag/scroll (SCRUM-1402) + keyboard (SCRUM-1403) + clipboard/session
+        # (SCRUM-1404) + utility (SCRUM-1405). No tool stays declared-only.
         self.assertEqual(
             IMPLEMENTED,
             {
@@ -305,6 +495,11 @@ class ToolSurfaceTest(unittest.TestCase):
                 "middle_click",
                 "double_click",
                 "triple_click",
+                "mouse_move",
+                "left_click_drag",
+                "scroll",
+                "left_mouse_down",
+                "left_mouse_up",
                 "type",
                 "key",
                 "hold_key",
@@ -329,6 +524,20 @@ class ToolSurfaceTest(unittest.TestCase):
         self.assertEqual(repeat["type"], "integer")
         self.assertEqual(repeat["minimum"], 1)
         self.assertNotIn("repeat", schema.get("required", []))  # stays optional
+        self.assertEqual(len(TOOL_NAMES), 24)
+
+    def test_scroll_has_optional_text_modifier(self):
+        # SCRUM-1402: scroll gains an additive `text` modifier (held during the
+        # scroll); it stays optional and the surface stays 24.
+        scroll = next(t for t in TOOLS if t["name"] == "scroll")
+        schema = scroll["inputSchema"]
+        text = schema["properties"].get("text")
+        self.assertIsNotNone(text)
+        self.assertEqual(text["type"], "string")
+        self.assertNotIn("text", schema.get("required", []))
+        self.assertEqual(
+            schema["required"], ["coordinate", "scroll_direction", "scroll_amount"]
+        )
         self.assertEqual(len(TOOL_NAMES), 24)
 
     def test_request_access_schema_matches_native(self):
@@ -624,7 +833,7 @@ class ComputerBatchTest(unittest.TestCase):
         res = self._batch(
             [
                 {"name": "type", "arguments": {"text": "hi"}},
-                {"name": "mouse_move", "arguments": {"coordinate": [1, 2]}},  # pending
+                {"name": "mouse_move", "arguments": {"coordinate": [1, 2]}},  # fails
                 {"name": "key", "arguments": {"text": "Return"}},  # never runs
             ]
         )
@@ -634,10 +843,17 @@ class ComputerBatchTest(unittest.TestCase):
         self.assertEqual((s["succeeded"], s["failed"], s["skipped"]), (1, 1, 1))
         # only the first step shelled out; the post-halt key never ran
         self.assertEqual(self.calls, [["type", "--delay", "12", "--", "hi"]])
-        # the failing step's pending-owner error is carried through (tagged);
-        # mouse_move is still a declared-only sibling (SCRUM-1402)
+        # the failing step's error is carried through, tagged with its index:
+        # mouse_move maps its coordinate through the screenshot session and none
+        # was established in this unit setup, so it raises the look-before-you-
+        # point guard before shelling out — the deterministic, xdotool-free
+        # failure that halts the batch here.
         self.assertTrue(
-            any("SCRUM-1402" in b.get("text", "") for b in res["content"][1:])
+            any(
+                "step 1" in b.get("text", "")
+                and "no screenshot session" in b.get("text", "")
+                for b in res["content"][1:]
+            )
         )
 
     def test_rejects_nested_computer_batch_without_recursing(self):

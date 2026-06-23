@@ -221,6 +221,13 @@ class Computer:
         self._clipboard_write = False
         self._system_key_combos = False
 
+        # --- held pointer state (SCRUM-1402 left_mouse_down/up)
+        # Button 1 is held ACROSS calls by left_mouse_down until left_mouse_up.
+        # Lives here (not on the X server) so the persistent child can guard
+        # against a double press and auto-release a button stranded by a turn
+        # that ended before left_mouse_up (see reset_held_state).
+        self._left_button_down = False
+
     def _env(self) -> dict:
         """A subprocess env that forces our target DISPLAY."""
         env = dict(os.environ)
@@ -706,6 +713,163 @@ class Computer:
             self.run_xdotool(argv)
         ack = f"{self._click_verb(button, count)} at ({dx}, {dy})"
         return ack + (f" holding {text}" if text else "")
+
+    # --- move / drag / scroll (SCRUM-1402) -------------------------------
+    # Pointer motion, press-drag-release, scroll wheel, and the stateful
+    # left_mouse_down/up pair that holds button 1 ACROSS calls in this
+    # persistent process. Image-space coordinates are mapped to device pixels
+    # via the screenshot session (to_device), exactly like the click group, so a
+    # move before any screenshot raises the same "no screenshot session" guard.
+    _SCROLL_BUTTONS = {"up": 4, "down": 5, "left": 6, "right": 7}
+
+    def mouse_move(self, coordinate) -> str:
+        """Move the pointer to an image-space ``coordinate`` without clicking."""
+        x, y = self._coordinate(coordinate)
+        dx, dy = self.to_device(x, y)
+        self.run_xdotool(["mousemove", "--sync", dx, dy])
+        return f"moved to ({dx}, {dy})"
+
+    def left_click_drag(self, coordinate, start_coordinate=None) -> str:
+        """Press the left button at ``start_coordinate`` (or the current pointer
+        position) and drag to ``coordinate`` before releasing.
+
+        Built as ONE xdotool invocation so the press/drag/release land as a single
+        gesture and the button is never left down (it is self-contained — it does
+        not touch the :attr:`_left_button_down` flag, which only tracks the
+        explicit left_mouse_down/up pair). ``start_coordinate`` is optional: when
+        omitted the drag begins wherever the pointer currently is.
+        """
+        x, y = self._coordinate(coordinate)
+        dx, dy = self.to_device(x, y)
+        argv: list = []
+        if start_coordinate is not None:
+            sx, sy = self._coordinate(start_coordinate)
+            sdx, sdy = self.to_device(sx, sy)
+            argv += ["mousemove", "--sync", sdx, sdy]
+            origin = f"({sdx}, {sdy})"
+        else:
+            origin = "the current position"
+        argv += ["mousedown", 1, "mousemove", "--sync", dx, dy, "mouseup", 1]
+        self.run_xdotool(argv)
+        return f"dragged from {origin} to ({dx}, {dy})"
+
+    def scroll(self, coordinate, scroll_direction, scroll_amount, text=None) -> str:
+        """Scroll ``scroll_amount`` clicks in ``scroll_direction`` at an
+        image-space ``coordinate``, optionally holding ``text`` modifier(s).
+
+        Directions map to X11 wheel buttons (up=4, down=5, left=6, right=7); the
+        amount drives xdotool ``click --repeat``. Optional ``text`` modifier(s)
+        (e.g. ``'ctrl'``, ``'shift'``) are held for the scroll and ALWAYS released
+        (``keyup`` in ``finally``) — the same no-stranded-modifier guarantee as
+        :meth:`click` / :meth:`hold_key`.
+        """
+        if scroll_direction not in self._SCROLL_BUTTONS:
+            raise ComputerError(
+                f"unknown scroll_direction {scroll_direction!r} "
+                "(expected up/down/left/right)"
+            )
+        try:
+            amount = int(scroll_amount)
+        except (TypeError, ValueError):
+            raise ComputerError(
+                f"scroll_amount must be an integer: {scroll_amount!r}"
+            )
+        if amount < 1:
+            raise ComputerError(f"scroll_amount must be >= 1: {amount}")
+        x, y = self._coordinate(coordinate)
+        dx, dy = self.to_device(x, y)
+        button = self._SCROLL_BUTTONS[scroll_direction]
+        argv = ["mousemove", "--sync", dx, dy, "click", "--repeat", amount, button]
+        if text:
+            self.run_xdotool(["keydown", "--", text])
+            try:
+                self.run_xdotool(argv)
+            finally:
+                self.run_xdotool(["keyup", "--", text])
+        else:
+            self.run_xdotool(argv)
+        ack = f"scrolled {scroll_direction} x{amount} at ({dx}, {dy})"
+        return ack + (f" holding {text}" if text else "")
+
+    def left_mouse_down(self, coordinate=None) -> str:
+        """Press and HOLD the left button (button 1), keeping it down across calls
+        until :meth:`left_mouse_up`. Raises if a button is already held (the caller
+        must release before pressing again). ``coordinate`` optionally moves the
+        pointer there first.
+
+        The held flag is set only AFTER the press lands, so a failed dispatch
+        (e.g. xdotool missing) never leaves the flag stranded True.
+        """
+        if self._left_button_down:
+            raise ComputerError(
+                "left button is already held (call left_mouse_up before pressing "
+                "again)"
+            )
+        argv: list = []
+        pos = "the current position"
+        if coordinate is not None:
+            x, y = self._coordinate(coordinate)
+            dx, dy = self.to_device(x, y)
+            argv += ["mousemove", "--sync", dx, dy]
+            pos = f"({dx}, {dy})"
+        argv += ["mousedown", 1]
+        self.run_xdotool(argv)
+        self._left_button_down = True
+        return f"left button down at {pos}"
+
+    def left_mouse_up(self, coordinate=None) -> str:
+        """Release a left button held by :meth:`left_mouse_down`. Safe (a no-op)
+        when nothing is held. ``coordinate`` optionally moves the pointer first.
+
+        The held flag is cleared only AFTER the release lands, so a failed
+        dispatch keeps the flag True and the next reset/up can retry.
+        """
+        if not self._left_button_down:
+            return "left button was not held (no-op)"
+        argv: list = []
+        pos = "the current position"
+        if coordinate is not None:
+            x, y = self._coordinate(coordinate)
+            dx, dy = self.to_device(x, y)
+            argv += ["mousemove", "--sync", dx, dy]
+            pos = f"({dx}, {dy})"
+        argv += ["mouseup", 1]
+        self.run_xdotool(argv)
+        self._left_button_down = False
+        return f"left button up at {pos}"
+
+    # --- held-state reset (SCRUM-1402 / Q3) ------------------------------
+    def reset_held_state(self) -> None:
+        """Drop a held left button and clear session grants — idempotent and it
+        NEVER raises (it runs on the disconnect/stop, idle, and signal paths).
+
+        This is the auto-release that stops a turn which ended before
+        left_mouse_up from stranding a pressed button: the persistent child calls
+        it on session idle, on disconnect/stop, and on restart, so the next
+        session starts from a clean pointer + grant state.
+        """
+        if self._left_button_down:
+            try:
+                self.run_xdotool(["mouseup", "1"])
+            except Exception:  # noqa: BLE001 — best-effort release, never raise
+                pass
+            self._left_button_down = False
+        self._allowlist.clear()
+        self._clipboard_read = False
+        self._clipboard_write = False
+        self._system_key_combos = False
+
+    def clear_stranded_button(self) -> None:
+        """Best-effort ``mouseup 1`` at startup to clear a button a CRASHED
+        predecessor may have left pressed before we took the single-owner lock —
+        our own :attr:`_left_button_down` is False on a fresh process, so
+        :meth:`reset_held_state` would skip it. ``mouseup`` on an un-pressed button
+        is a harmless X no-op. Never raises.
+        """
+        try:
+            self.run_xdotool(["mouseup", "1"])
+        except Exception:  # noqa: BLE001 — best-effort, xdotool may be absent
+            pass
 
     # --- utility (SCRUM-1405) --------------------------------------------
     def wait(self, duration) -> str:
