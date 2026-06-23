@@ -30,16 +30,16 @@ a **single, long-lived child process** that speaks MCP over stdio.
 
 ## Tool surface
 
-24 tools, grouped by the sibling ticket that owns each body. `screenshot`
-(SCRUM-1397), the keyboard group `type` / `key` / `hold_key` (SCRUM-1403), and
-the **clipboard + session group (SCRUM-1404)** are implemented; the rest are
-declared and return a clear pending-owner error until their ticket lands. Full
-input schemas:
+24 tools, grouped by the sibling ticket that owns each body. The **capture group**
+(`screenshot`, `zoom`, SCRUM-1400), the **keyboard group** (`type` / `key` /
+`hold_key`, SCRUM-1403), and the **clipboard + session group** (SCRUM-1404) are
+implemented; the rest are declared and return a clear pending-owner error until
+their ticket lands. Full input schemas:
 [`docs/computer-use-mcp-tools-schema.md`](docs/computer-use-mcp-tools-schema.md).
 
 | Group | Ticket | Tools |
 | --- | --- | --- |
-| capture | SCRUM-1400 | `screenshot` ✅, `zoom` |
+| capture | SCRUM-1400 | `screenshot` ✅, `zoom` ✅ |
 | click | SCRUM-1401 | `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click` |
 | move / drag / scroll | SCRUM-1402 | `mouse_move`, `left_click_drag`, `scroll`, `left_mouse_down`, `left_mouse_up` |
 | keyboard | SCRUM-1403 | `type` ✅, `key` ✅, `hold_key` ✅ |
@@ -107,16 +107,41 @@ plugin-computer-use/
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"screenshot","arguments":{}}}' \
-  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"type","arguments":{"text":"hello"}}}' \
-  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"key","arguments":{"text":"ctrl+a","repeat":1}}}' \
-  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"hold_key","arguments":{"text":"shift","duration":2}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"screenshot","arguments":{"save_to_disk":true}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"zoom","arguments":{"region":[600,300,900,500]}}}' \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"type","arguments":{"text":"hello"}}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"key","arguments":{"text":"ctrl+a","repeat":1}}}' \
+  '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"hold_key","arguments":{"text":"shift","duration":2}}}' \
   | DISPLAY=:10 python3 src/server.py
 ```
 
-`initialize` returns the handshake, `tools/list` the 24-tool surface, and the
-`screenshot` call a base64 PNG image block. The keyboard calls each return a
-short text ack (`isError:false`); they need `xdotool` on `PATH`.
+`initialize` returns the handshake, `tools/list` the 24-tool surface, the
+`screenshot` call a base64 PNG image block (plus a `Saved to disk: <path>` text
+block when `save_to_disk` is set), and `zoom` a magnified PNG of the region. The
+keyboard calls each return a short text ack (`isError:false`); they need
+`xdotool` on `PATH`.
+
+## Capture & coordinates
+
+`screenshot` captures `DISPLAY=:10` and, when the measured size matches a model
+resolution, downscales it (on the live 1920×1080 `:10` it returns **1366×768**).
+Each capture records a **screenshot → coordinate session**: the *measured* device
+geometry and the returned image geometry. Coordinates the model returns are in
+**image space** (relative to the last screenshot); the server maps them back to
+device pixels via `Computer.to_device(x, y)` — the foundation the click/move
+siblings (SCRUM-1401/1402) consume. Both the downscale and the coordinate mapping
+are derived from the *same measured geometry*, so they can never use different
+bases (the wrong-pixel-click failure mode).
+
+`zoom` takes `region: (x0, y0, x1, y1)` in image space, maps it to a device rect,
+and crops it from a **fresh full-resolution** capture — genuine magnification, not
+an upscale of the downscaled screenshot. It is **read-only**: it never moves the
+click-coordinate origin (clicks still refer to the last `screenshot`). If no
+screenshot has been taken yet, `zoom` establishes the session lazily.
+
+True 1:1 (no downscale) would require pinning `:10` / the RDP window to a
+model-friendly size — that is provisioning ([SCRUM-1396](https://aictpo.atlassian.net/browse/SCRUM-1396)),
+out of scope here.
 
 ### Keyboard group (SCRUM-1403)
 
@@ -134,10 +159,14 @@ short text ack (`isError:false`); they need `xdotool` on `PATH`.
 DISPLAY=:10 python3 -m unittest discover -s tests -v
 ```
 
-- `tests/test_dispatch_base.py` — coordinate-scaling math, xdotool command
-  construction, single-owner lock, screenshot-backend detection, surface shape.
-- `tests/test_stdio_roundtrip.py` — `initialize` → `tools/list` → `tools/call
-  screenshot` over a spawned server (AC1/AC2/AC3), plus error paths.
+- `tests/test_dispatch_base.py` — coordinate-scaling math, the screenshot →
+  coordinate session + `to_device` mapping, the measured-basis downscale target,
+  `zoom` region validation + region→device-rect math, xdotool command
+  construction, single-owner lock, screenshot-backend detection, surface shape,
+  plus live `screenshot`/`zoom` + `save_to_disk` (DISPLAY-gated).
+- `tests/test_stdio_roundtrip.py` — `initialize` → `tools/list` → `tools/call`
+  `screenshot` (incl. `save_to_disk` path block) and `zoom` over a spawned server,
+  plus error paths.
 - `tests/test_manifest.py` — `plugin.json` + schema doc are present and in sync
   with `src/tools.py`.
 
@@ -205,6 +234,7 @@ declare `xdotool`, a screenshot backend, and `xclip` in its `system_deps`.
 | `CU_WIDTH` / `CU_HEIGHT` | `1920` / `1080` | screen size for coordinate scaling |
 | `CU_SCREENSHOT_DELAY` | `2.0` | post-action settle before a screenshot |
 | `CU_LOCK_PATH` | `/tmp/sidebutton-computer-use.lock` | single-owner lock file |
+| `CU_SAVE_DIR` | `/tmp/sidebutton-computer-use/` | where `save_to_disk` writes shareable PNGs (host-pruned; saved files are not auto-deleted) |
 
 ## License
 

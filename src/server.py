@@ -41,7 +41,9 @@ class Server:
         # Only tools also listed in tools.IMPLEMENTED are dispatched; every other
         # declared tool returns a pending-owner error.
         self._handlers = {
-            "screenshot": self._screenshot,                  # SCRUM-1397
+            # capture (SCRUM-1397 / 1400)
+            "screenshot": self._screenshot,
+            "zoom": self._zoom,
             # keyboard (SCRUM-1403)
             "type": self._type,
             "key": self._key,
@@ -100,8 +102,8 @@ class Server:
             return _tool_error(
                 f"tool {name!r} is declared but not yet implemented; its body is "
                 f"owned by {owner_ticket(name)}. The dispatch base (computer.py: "
-                f"run_xdotool / scale_coordinates / screenshot) is ready for that "
-                f"work."
+                f"run_xdotool / scale_coordinates / screenshot / to_device) is "
+                f"ready for that work."
             )
 
         args = params.get("arguments") or {}
@@ -111,13 +113,22 @@ class Server:
             return _tool_error(str(exc))
 
     # --- tool handlers ----------------------------------------------------
+    # Capture group (SCRUM-1400): screenshot/zoom return MCP image content
+    # blocks (plus a saved-path text block when save_to_disk is honoured).
     def _screenshot(self, args: dict) -> dict:
-        b64 = self.computer.screenshot()
-        return {
-            "content": [{"type": "image", "data": b64, "mimeType": "image/png"}],
-            "isError": False,
-        }
+        cap = self.computer.screenshot(
+            save_to_disk=bool(args.get("save_to_disk", False))
+        )
+        return _capture_result(cap)
 
+    def _zoom(self, args: dict) -> dict:
+        cap = self.computer.zoom(
+            region=args.get("region"),
+            save_to_disk=bool(args.get("save_to_disk", False)),
+        )
+        return _capture_result(cap)
+
+    # Keyboard group (SCRUM-1403): plain text acknowledgements.
     def _type(self, args: dict) -> dict:
         return _tool_text(self.computer.type_text(args["text"]))
 
@@ -162,6 +173,15 @@ def _error(mid, code: int, message: str) -> dict:
 
 def _tool_error(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
+def _capture_result(cap) -> dict:
+    """An MCP result for a capture: an image block, plus a text block carrying the
+    saved path when ``save_to_disk`` was honoured."""
+    content = [{"type": "image", "data": cap.data_b64, "mimeType": "image/png"}]
+    if cap.path:
+        content.append({"type": "text", "text": f"Saved to disk: {cap.path}"})
+    return {"content": content, "isError": False}
 
 
 def _tool_text(text: str) -> dict:
