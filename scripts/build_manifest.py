@@ -19,34 +19,32 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from tools import IMPLEMENTED, OWNER, TOOL_NAMES, TOOLS  # noqa: E402
+from tools import IMPLEMENTED, OWNER, TOOLS  # noqa: E402
 
 NAME = "computer-use"
 VERSION = "0.1.0"
 DESCRIPTION = (
     "Persistent stdio MCP server exposing the Anthropic computer-use action "
     "surface (screenshot, click, move, keyboard, clipboard, batch) against the "
-    "agent desktop on DISPLAY=:10. Scaffold + dispatch base (SCRUM-1397); the "
-    "individual tool bodies land in SCRUM-1400..1405 and engine hosting in "
-    "SCRUM-1406."
+    "agent desktop on DISPLAY=:10. Loads on the merged service-plugin tier "
+    "(SCRUM-1406); individual tool bodies land in SCRUM-1400..1405."
 )
 
-# Proposed service-plugin contract — the concrete shape SCRUM-1406 implements
-# against. NOTE: today's per-call loader (the-assistant packages/server/src/
-# plugins) requires tools[].handler and knows no `runtime` field, so it will
-# intentionally reject this manifest until 1406 teaches it the service shape.
+# Service-plugin spawn spec consumed by the merged engine's validateServiceSpec
+# (the-assistant packages/server/src/plugins/loader.ts). Only command / timeoutMs
+# / toolNamespace / tools are recognized; everything else is ignored. `command`
+# must be a non-empty *string* — the engine whitespace-splits it and spawns the
+# child with cwd=plugin dir, so the relative "src/server.py" resolves
+# (service-manager.ts). `toolNamespace` pins the public prefix to "computer_use"
+# (else it defaults to the hyphenated plugin name → computer-use_*). hold_key/wait
+# can run up to ~100s, so they override the 120s service default explicitly.
 SERVICE = {
-    "protocol": "mcp-stdio",
-    "command": ["python3", "src/server.py"],
-    "toolDiscovery": "tools/list",
-    "singleOwner": True,
-    "display": ":10",
-    "systemDeps": [
-        "xdotool",
-        "scrot | gnome-screenshot | imagemagick",
-        "xclip",
-        "wmctrl",
-    ],
+    "command": "python3 src/server.py",
+    "toolNamespace": "computer_use",
+    "tools": {
+        "hold_key": {"timeoutMs": 120000},
+        "wait": {"timeoutMs": 120000},
+    },
 }
 
 
@@ -57,7 +55,11 @@ def build_manifest() -> dict:
         "description": DESCRIPTION,
         "runtime": "service",
         "service": SERVICE,
-        "tools": TOOLS,
+        # Service-tier manifests carry no static tools: the engine normalizes
+        # this to [] and discovers the live surface from the child's tools/list
+        # (guarded by tests/test_stdio_roundtrip.py). Emitted explicitly so the
+        # committed manifest matches what the loader stores.
+        "tools": [],
     }
 
 
