@@ -94,11 +94,11 @@ Left-click at a coordinate.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     },
     "text": {
       "type": "string",
@@ -122,11 +122,11 @@ Right-click at a coordinate.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     },
     "text": {
       "type": "string",
@@ -150,11 +150,11 @@ Middle-click at a coordinate.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     },
     "text": {
       "type": "string",
@@ -178,11 +178,11 @@ Double left-click at a coordinate.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     },
     "text": {
       "type": "string",
@@ -206,11 +206,11 @@ Triple left-click at a coordinate.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     },
     "text": {
       "type": "string",
@@ -236,11 +236,11 @@ Move the pointer to a coordinate without clicking.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     }
   },
   "required": [
@@ -260,20 +260,20 @@ Press the left button at start_coordinate (or the current position) and drag to 
     "start_coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     },
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     }
   },
   "required": [
@@ -293,11 +293,11 @@ Scroll in a direction by an amount at a coordinate.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     },
     "scroll_direction": {
       "type": "string",
@@ -336,11 +336,11 @@ Press and hold the left mouse button (released later by left_mouse_up). Requires
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     }
   }
 }
@@ -357,11 +357,11 @@ Release a left mouse button held by left_mouse_down.
     "coordinate": {
       "type": "array",
       "items": {
-        "type": "integer"
+        "type": "number"
       },
       "minItems": 2,
       "maxItems": 2,
-      "description": "[x, y] in the model coordinate space (scaled to the screen)."
+      "description": "[x, y] pixel position read from the most recent screenshot; the server scales it to the screen (values may be fractional)."
     }
   }
 }
