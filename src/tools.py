@@ -15,12 +15,19 @@ its body; SCRUM-1397 only wires ``screenshot``.
 from __future__ import annotations
 
 # Reusable schema fragments -------------------------------------------------
+# Coordinate items are `number`, not `integer`, mirroring the native captured
+# contract (the-assistant docs/computer-use-mcp-tools-schema.md): the value is a
+# pixel position read from the most recent screenshot and the server scales it to
+# device pixels, which can yield a fractional coordinate. The dispatch base already
+# rounds floats (Computer._coordinate), so only this declared type was diverging.
+# (`region` stays `integer` and `scroll_amount` stays `integer` — native does too.)
 _COORDINATE = {
     "type": "array",
-    "items": {"type": "integer"},
+    "items": {"type": "number"},
     "minItems": 2,
     "maxItems": 2,
-    "description": "[x, y] in the model coordinate space (scaled to the screen).",
+    "description": "[x, y] pixel position read from the most recent screenshot; "
+    "the server scales it to the screen (values may be fractional).",
 }
 
 # Shared with screenshot + zoom (the canonical contract puts it on both).

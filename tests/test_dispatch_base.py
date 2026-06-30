@@ -556,6 +556,32 @@ class ToolSurfaceTest(unittest.TestCase):
         self.assertIn("app", oa["inputSchema"]["properties"])
         self.assertNotIn("name", oa["inputSchema"]["properties"])
 
+    def test_coordinate_items_are_number_matching_native(self):
+        # Parity with the native captured contract (the-assistant
+        # docs/computer-use-mcp-tools-schema.md): `coordinate` / `start_coordinate`
+        # items are `number` (the server scales screenshot coordinates to device
+        # pixels and may yield a fractional value), NOT `integer`. `region` (zoom)
+        # and `scroll_amount` stay `integer`, matching native. The dispatch base
+        # already rounds floats (Computer._coordinate), so the declared type was
+        # the only thing diverging.
+        seen = 0
+        for tool in TOOLS:
+            props = tool["inputSchema"]["properties"]
+            for name in ("coordinate", "start_coordinate"):
+                if name in props:
+                    self.assertEqual(
+                        props[name]["items"]["type"], "number",
+                        f"{tool['name']}.{name} must be number for native parity",
+                    )
+                    seen += 1
+            if "region" in props:  # zoom: integer pixel rectangle in native
+                self.assertEqual(props["region"]["items"]["type"], "integer")
+            if "scroll_amount" in props:  # integer click-count in native
+                self.assertEqual(props["scroll_amount"]["type"], "integer")
+        # 5 clicks + mouse_move + left_click_drag(coordinate+start) + scroll +
+        # left_mouse_down + left_mouse_up = 11 coordinate-bearing fields.
+        self.assertEqual(seen, 11)
+
 
 class GrantStateTest(unittest.TestCase):
     """request_access / list_granted_applications, no desktop required."""
